@@ -1,0 +1,303 @@
+{
+  "baseline": {
+    "tag": "core-d27e1c8f3860-37424761412",
+    "hostCommit": "d27e1c8f3860815e28f7acaf9c7fa123fa90d6d9",
+    "buildProfile": "original-scalar"
+  },
+  "candidate": {
+    "hostCommit": "4f9c00a21c0400dc7c6ae308d6616efa3f66fd5c",
+    "buildProfile": "optimized"
+  },
+  "frames": 120,
+  "repetitions": 3,
+  "executionOrder": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+    "baseline",
+    "candidate"
+  ],
+  "before": {
+    "matched": true,
+    "frames": 120,
+    "elapsedMs": 10629.669999999925,
+    "uncappedFps": 11.2891557310811,
+    "medianFrameMs": 88.03000000002794,
+    "p95FrameMs": 90.65999999991618,
+    "initMs": 433.55500000016764,
+    "bootMs": 183.1799999999348,
+    "videoMessages": 0,
+    "videoBytes": 0,
+    "audioMessages": 668,
+    "audioFrames": 64128,
+    "runs": [
+      {
+        "scenario": "compute",
+        "initMs": 433.55500000016764,
+        "bootMs": 186.839999999851,
+        "frames": 120,
+        "elapsedMs": 10629.669999999925,
+        "uncappedFps": 11.2891557310811,
+        "medianFrameMs": 88.03000000002794,
+        "p95FrameMs": 90.65999999991618,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 668,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      },
+      {
+        "scenario": "compute",
+        "initMs": 426.84499999997206,
+        "bootMs": 183.1799999999348,
+        "frames": 120,
+        "elapsedMs": 10555.700000000186,
+        "uncappedFps": 11.368265486893137,
+        "medianFrameMs": 87.92500000004657,
+        "p95FrameMs": 88.35499999998137,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 668,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      },
+      {
+        "scenario": "compute",
+        "initMs": 449.0700000000652,
+        "bootMs": 172.71999999997206,
+        "frames": 120,
+        "elapsedMs": 10990.60999999987,
+        "uncappedFps": 10.918411261977399,
+        "medianFrameMs": 91.54000000003725,
+        "p95FrameMs": 91.91500000003725,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 668,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  "after": {
+    "matched": true,
+    "frames": 120,
+    "elapsedMs": 9890.930000000168,
+    "uncappedFps": 12.1323272937932,
+    "medianFrameMs": 82.03999999980442,
+    "p95FrameMs": 82.91499999980442,
+    "initMs": 433.1799999999348,
+    "bootMs": 169.78000000002794,
+    "videoMessages": 0,
+    "videoBytes": 0,
+    "audioMessages": 120,
+    "audioFrames": 64128,
+    "runs": [
+      {
+        "scenario": "compute",
+        "initMs": 479.5200000000186,
+        "bootMs": 184.17500000004657,
+        "frames": 120,
+        "elapsedMs": 9904.48999999999,
+        "uncappedFps": 12.115717215121638,
+        "medianFrameMs": 82.33500000019558,
+        "p95FrameMs": 84.15999999991618,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 120,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      },
+      {
+        "scenario": "compute",
+        "initMs": 431.0649999999441,
+        "bootMs": 166.39500000001863,
+        "frames": 120,
+        "elapsedMs": 9846.35999999987,
+        "uncappedFps": 12.187244829561543,
+        "medianFrameMs": 81.93999999994412,
+        "p95FrameMs": 82.49500000011176,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 120,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      },
+      {
+        "scenario": "compute",
+        "initMs": 433.1799999999348,
+        "bootMs": 169.78000000002794,
+        "frames": 120,
+        "elapsedMs": 9890.930000000168,
+        "uncappedFps": 12.1323272937932,
+        "medianFrameMs": 82.03999999980442,
+        "p95FrameMs": 82.91499999980442,
+        "videoMessages": 0,
+        "videoBytes": 0,
+        "audioMessages": 120,
+        "audioFrames": 64128,
+        "matched": true,
+        "lastFrame": {
+          "width": 640,
+          "height": 240,
+          "colors": [
+            [
+              254,
+              0,
+              0
+            ],
+            [
+              0,
+              255,
+              0
+            ],
+            [
+              0,
+              0,
+              255
+            ],
+            [
+              254,
+              254,
+              254
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  "throughputRatio": 1.0746886288751154,
+  "elapsedReductionPercent": 6.9497924206467605,
+  "scope": "Uncapped real Dolphin worker execution and message delivery; excludes WebGL/audio playback and display pacing. Original probes do not establish commercial-game speed.",
+  "note": "Medians of three measurements per core, alternating order on the same runner. Inspect the raw runs and compatibility before choosing a release. No automatic speed threshold."
+}

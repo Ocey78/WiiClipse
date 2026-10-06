@@ -60,6 +60,8 @@ Add the HTTPS deployment to the iPhone Home Screen for the PWA-style experience.
 
 ## Current verification boundary
 
-[Native build 37424761412](https://github.com/Ocey78/WiiClipse/actions/runs/37424761412), from frontend commit `d27e1c8`, compiled the core and executed both original probes in Chromium. Each produced the expected 640 × 240 frame: red/green/blue/white for GameCube and the reverse order for the Wii WAD. The versioned core and corresponding source use release tag [`core-d27e1c8f3860-37424761412`](https://github.com/Ocey78/WiiClipse/releases/tag/core-d27e1c8f3860-37424761412).
+[Native build 37499430947](https://github.com/Ocey78/WiiClipse/actions/runs/37499430947), from commit `4f9c00a`, compiled the optimized core and executed both original probes in Chromium. Each produced the expected 640 × 240 frame: red/green/blue/white for GameCube and the reverse order for the Wii WAD. The versioned core and corresponding source use release tag [`core-4f9c00a21c04-37499430947`](https://github.com/Ocey78/WiiClipse/releases/tag/core-4f9c00a21c04-37499430947).
 
-This verifies interpreter execution, video output, and installation/launch of the synthetic WAD. Commercial games, broader WAD compatibility, audio, controller behavior, and emulation on an actual iPhone/iPad remain unverified. The Cached Interpreter and Software Renderer can be slow. See [`native/README.md`](native/README.md) for build and deployment details.
+Three paired measurements showed 7.47% higher compute throughput on the build runner and 5.52% locally. Audio messages fell by 82% while preserving all sample frames. See the [performance report](docs/performance/README.md) for raw results, browser allocation improvements, and measurement scope.
+
+This verifies interpreter execution, video output, and installation/launch of the synthetic WAD. Audio signal, resampling, and lifecycle tests pass in Chromium and WebKit. Commercial-game audio, broader title compatibility, controller behavior, and actual iPhone/iPad performance remain unverified. The Cached Interpreter and Software Renderer can be slow. See [`native/README.md`](native/README.md) for build and deployment details.

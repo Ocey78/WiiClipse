@@ -1,0 +1,268 @@
+{
+  "browser": "Installed Chrome on Windows",
+  "frames": 120,
+  "repetitions": 3,
+  "executionOrder": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+    "baseline",
+    "candidate"
+  ],
+  "baselineTag": "core-d27e1c8f3860-37424761412",
+  "candidateTag": "core-4f9c00a21c04-37499430947",
+  "before": [
+    {
+      "scenario": "compute",
+      "initMs": 200.11499997973442,
+      "bootMs": 207.9050000011921,
+      "frames": 120,
+      "elapsedMs": 7933.785000026226,
+      "uncappedFps": 15.12518930114735,
+      "medianFrameMs": 65.66999998688698,
+      "p95FrameMs": 69.47999998927116,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 668,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    },
+    {
+      "scenario": "compute",
+      "initMs": 206.8599999845028,
+      "bootMs": 211.07000002264977,
+      "frames": 120,
+      "elapsedMs": 7981.135000020266,
+      "uncappedFps": 15.03545548342376,
+      "medianFrameMs": 66.06499999761581,
+      "p95FrameMs": 70.60999998450279,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 668,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    },
+    {
+      "scenario": "compute",
+      "initMs": 205.8949999809265,
+      "bootMs": 205.8550000190735,
+      "frames": 120,
+      "elapsedMs": 8003.634999990463,
+      "uncappedFps": 14.993187470460983,
+      "medianFrameMs": 66.33500000834465,
+      "p95FrameMs": 69.93500000238419,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 668,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    }
+  ],
+  "after": [
+    {
+      "scenario": "compute",
+      "initMs": 211.22499999403954,
+      "bootMs": 200.2199999988079,
+      "frames": 120,
+      "elapsedMs": 7563.655000001192,
+      "uncappedFps": 15.865345524086052,
+      "medianFrameMs": 62.645000010728836,
+      "p95FrameMs": 65.67500001192093,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 120,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    },
+    {
+      "scenario": "compute",
+      "initMs": 193.5799999833107,
+      "bootMs": 205.2800000011921,
+      "frames": 120,
+      "elapsedMs": 7533.759999990463,
+      "uncappedFps": 15.928301405958234,
+      "medianFrameMs": 62.46500000357628,
+      "p95FrameMs": 67.32499998807907,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 120,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    },
+    {
+      "scenario": "compute",
+      "initMs": 199.54499998688698,
+      "bootMs": 205.41000002622604,
+      "frames": 120,
+      "elapsedMs": 7658.239999979734,
+      "uncappedFps": 15.669396623808806,
+      "medianFrameMs": 63.18000000715256,
+      "p95FrameMs": 69.80500000715256,
+      "videoMessages": 0,
+      "videoBytes": 0,
+      "audioMessages": 120,
+      "audioFrames": 64128,
+      "matched": true,
+      "lastFrame": {
+        "width": 640,
+        "height": 240,
+        "colors": [
+          [
+            254,
+            0,
+            0
+          ],
+          [
+            0,
+            255,
+            0
+          ],
+          [
+            0,
+            0,
+            255
+          ],
+          [
+            254,
+            254,
+            254
+          ]
+        ]
+      }
+    }
+  ],
+  "throughputRatio": 1.0551955370808173,
+  "elapsedReductionPercent": 5.2308349629221045,
+  "scope": "Uncapped Dolphin worker execution and IPC; excludes WebGL/audio playback and display pacing. Original compute probe, not a commercial game."
+}

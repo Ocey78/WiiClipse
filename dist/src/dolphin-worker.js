@@ -9,7 +9,7 @@ const SAVE_DIR = '/dolphin/save';
 const CONTENT_DIR = '/content';
 // The build replaces this token with the digest of the copied core assets.
 // A source checkout has no stamped version and keeps normal development URLs.
-const CORE_ASSET_VERSION = '4970b8ce491430e4d604a0f09e351566ca6be4f82ad28b07aec970fcdd90b41e';
+const CORE_ASSET_VERSION = '63195d1d8635a96b57ef74f9b309a8ea25642d7d99689eafa2e9ec2619017479';
 
 const send = (type, extra = {}) => self.postMessage({ type, ...extra });
 const status = (message) => send('status', { message });

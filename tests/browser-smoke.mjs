@@ -44,9 +44,11 @@ try {
     await context.addInitScript(({ samples }) => {
       const OriginalWorker = window.Worker;
       window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+      window.__bootProbeWorkerCount = 0;
       window.Worker = class extends OriginalWorker {
         constructor(...args) {
           super(...args);
+          window.__bootProbeWorkerCount++;
           this.addEventListener('message', ({ data }) => {
             if (data?.type !== 'video' || !data.buffer) return;
             const result = window.__bootProbe;
@@ -122,6 +124,20 @@ try {
     await page.locator('#play').click();
     await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
     console.log(JSON.stringify({ nativeWadBoot: await page.evaluate(() => window.__bootProbe), titleId: wadProbe.titleId }));
+
+    // Replace the running Wii channel with the original GameCube DOL in the
+    // same page and worker. Reversed WAD colors cannot satisfy this new match.
+    const replacementStart = await page.evaluate(samples => {
+      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+      return { timeOrigin: performance.timeOrigin, workers: window.__bootProbeWorkerCount };
+    }, bootProbe.samples);
+    await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
+    assert.equal(await page.locator('#play').isDisabled(), false, 'Selecting a different title must allow replacing the running WAD');
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    assert.deepEqual(await page.evaluate(() => ({ timeOrigin: performance.timeOrigin, workers: window.__bootProbeWorkerCount })),
+      replacementStart, 'Title replacement must keep the same page and native worker');
+    console.log(JSON.stringify({ nativeTitleReplacement: 'WAD to DOL', nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
   }
   await page.evaluate(() => navigator.serviceWorker.ready);
   if (server) {
