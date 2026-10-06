@@ -53,6 +53,10 @@ jobs:
         run: node tests/renderer-browser.mjs
       - name: Verify browser audio streaming
         run: node tests/browser-audio.mjs
+      - name: Verify WebKit audio streaming
+        run: node tests/browser-audio.mjs
+        env:
+          SMOKE_BROWSER: webkit
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

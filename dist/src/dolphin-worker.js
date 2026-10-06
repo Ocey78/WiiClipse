@@ -7,6 +7,9 @@ let running = false;
 let frameCount = 0;
 const SAVE_DIR = '/dolphin/save';
 const CONTENT_DIR = '/content';
+// The build replaces this token with the digest of the copied core assets.
+// A source checkout has no stamped version and keeps normal development URLs.
+const CORE_ASSET_VERSION = '4970b8ce491430e4d604a0f09e351566ca6be4f82ad28b07aec970fcdd90b41e';
 
 const send = (type, extra = {}) => self.postMessage({ type, ...extra });
 const status = (message) => send('status', { message });
@@ -14,9 +17,13 @@ const status = (message) => send('status', { message });
 function candidateCoreURLs() {
   const here = self.location.href;
   return [
-    new URL('../core/dolphin-core.js', here).href,
-    new URL('../public/core/dolphin-core.js', here).href,
-  ];
+    '../core/dolphin-core.js',
+    '../public/core/dolphin-core.js',
+  ].map(path => {
+    const url = new URL(path, here);
+    if (/^[a-f0-9]{64}$/.test(CORE_ASSET_VERSION)) url.searchParams.set('v', CORE_ASSET_VERSION);
+    return url.href;
+  });
 }
 
 async function importCoreFactory() {
@@ -31,8 +38,12 @@ async function importCoreFactory() {
 }
 
 function coreAssetURL(file, moduleURL) {
-  const base = new URL('.', moduleURL);
-  return new URL(file, base).href;
+  const module = new URL(moduleURL);
+  const asset = new URL(file, module);
+  if (asset.origin !== module.origin) throw new Error('Dolphin core assets must use the module origin.');
+  const version = module.searchParams.get('v');
+  if (version) asset.searchParams.set('v', version);
+  return asset.href;
 }
 
 function syncFS(populate = false) {
@@ -64,6 +75,8 @@ async function initialize() {
 
   moduleInstance = await factory({
     noInitialRun: true,
+    // Emscripten's default pthread URL drops import.meta.url's query string.
+    mainScriptUrlOrBlob: url,
     locateFile: (path) => coreAssetURL(path, url),
     print: (message) => send('log', { level: 'info', message: String(message) }),
     printErr: (message) => send('log', { level: 'error', message: String(message) }),
