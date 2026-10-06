@@ -27,6 +27,12 @@ jobs:
         run: node scripts/fetch-core.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium webkit
+      - name: Verify Chromium frame scheduling
+        run: node tests/scheduler-browser.mjs
+      - name: Verify WebKit frame scheduling
+        run: node tests/scheduler-browser.mjs
+        env:
+          SMOKE_BROWSER: webkit
       - name: Check Chromium startup and native boot when available
         shell: bash
         run: |
@@ -43,6 +49,10 @@ jobs:
           npm run test:browser
         env:
           SMOKE_BROWSER: webkit
+      - name: Verify WebGL pixel uploads and resizing
+        run: node tests/renderer-browser.mjs
+      - name: Verify browser audio streaming
+        run: node tests/browser-audio.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

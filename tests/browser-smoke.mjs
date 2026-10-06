@@ -53,7 +53,8 @@ try {
             const bytes = new Uint8Array(data.buffer);
             const colors = result.samples.map(({ x, y }) => {
               const offset = y * data.pitch + x * 4;
-              return [bytes[offset + 2], bytes[offset + 1], bytes[offset]];
+              const rgba = data.pixelFormat === 'RGBA8888';
+              return [bytes[offset + (rgba ? 0 : 2)], bytes[offset + 1], bytes[offset + (rgba ? 2 : 0)]];
             });
             result.frames++;
             result.lastFrame = { width: data.width, height: data.height, colors };
@@ -66,12 +67,14 @@ try {
     }, { samples: bootProbe.samples });
   }
   page = await context.newPage();
-  page.on('pageerror', error => errors.push(error.message));
+  if (process.env.SMOKE_DEBUG) page.on('console', message => console.log(message.text()));
+  page.on('pageerror', error => { errors.push(error.message); if (process.env.SMOKE_DEBUG) console.error(error); });
   page.on('console', message => {
     browserLogs.push(`${message.type()}: ${message.text()}`);
     if (browserLogs.length > 100) browserLogs.shift();
   });
   await page.goto(url);
+  if (process.env.SMOKE_DEBUG) console.log('Opened app', url);
   await page.waitForFunction(() => {
     const state = document.querySelector('#coreState')?.textContent || '';
     return /not built|ready|unavailable/i.test(state);
@@ -81,6 +84,7 @@ try {
   assert.equal(await page.evaluate(() => crossOriginIsolated), true, 'Pages startup must enable cross-origin isolation');
   assert.equal(await page.evaluate(() => typeof SharedArrayBuffer), 'function');
   const coreState = await page.locator('#coreState').textContent();
+  if (process.env.SMOKE_DEBUG) console.log('Core status', coreState);
   assert.match(coreState, /not built|ready/i, 'Worker must either initialize or report the known missing core, not an unrelated startup failure');
   if (process.env.EXPECT_CORE_READY === '1') {
     assert.match(coreState, /^Core ready/, 'Native build must initialize the real Dolphin module');
@@ -100,6 +104,7 @@ try {
   if (process.env.EXPECT_CORE_READY === '1') {
     await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
     await page.locator('#play').click();
+    if (process.env.SMOKE_DEBUG) console.log('Clicked DOL Play');
     await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
     console.log(JSON.stringify({ nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
   }

@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-function createFrameProbe(wiiPhysical = false) {
+function createFrameProbe(wiiPhysical = false, compute = false) {
   const words = [];
   const emit = (word) => words.push(word >>> 0);
   const d = (op, reg, base, immediate) => emit((op << 26) | (reg << 21) | (base << 16) | (immediate & 0xffff));
@@ -17,7 +17,7 @@ function createFrameProbe(wiiPhysical = false) {
   const branch = (opcode, target) => {
     const displacement = (target - words.length) * 4;
     if (displacement < -32768 || displacement > 32764) throw new RangeError('Probe branch is out of range.');
-    emit(opcode | (displacement & 0xfffc));
+    emit(opcode | (displacement & ((opcode >>> 26) === 18 ? 0x03fffffc : 0xfffc)));
   };
 
   // Direct GC executable boot supplies BAT mappings; Wii NAND boot starts in real mode.
@@ -62,7 +62,28 @@ function createFrameProbe(wiiPhysical = false) {
   vi32(0x34, 0);
   vi16(0x02, 5); // enable NTSC, non-interlaced
   emit(0x7c0004ac); // sync
-  emit(0x48000000); // b .; CoreTiming/VI continues to scan out the framebuffer
+  if (compute) {
+    // Keep executing arithmetic and uncached memory operations, so this workload
+    // cannot be reduced to Dolphin's idle-loop shortcut. The visible XFB stays intact.
+    li(8, 1);
+    const outer = words.length;
+    lis(9, wiiPhysical ? 0x0020 : 0xc020); // scratch RAM at physical 0x00200000
+    li(6, 1024);
+    emit(0x7cc903a6); // mtctr r6
+    const inner = words.length;
+    d(7, 8, 8, 25173); // mulli r8,r8,25173
+    d(14, 8, 8, 13849); // addi r8,r8,13849
+    emit((21 << 26) | (8 << 21) | (10 << 16) | (5 << 11) | (31 << 1)); // rotlwi r10,r8,5
+    emit((31 << 26) | (8 << 21) | (8 << 16) | (10 << 11) | (316 << 1)); // xor r8,r8,r10
+    d(36, 8, 9, 0); // stw r8,0(r9)
+    d(32, 10, 9, 0); // lwz r10,0(r9)
+    emit((31 << 26) | (8 << 21) | (8 << 16) | (10 << 11) | (266 << 1)); // add r8,r8,r10
+    d(14, 9, 9, 4); // addi r9,r9,4
+    branch(0x42000000, inner); // bdnz inner
+    branch(0x48000000, outer); // refill scratch ring forever, without an idle branch
+  } else {
+    emit(0x48000000); // b .; CoreTiming/VI continues to scan out the framebuffer
+  }
 
   // Dolphin requires all DOL text/data section addresses and sizes to align to 32 bytes.
   while (words.length % 8) emit(0x60000000); // unreachable nop padding
@@ -75,7 +96,8 @@ function createFrameProbe(wiiPhysical = false) {
   words.forEach((word, index) => bytes.writeUInt32BE(word, 0x100 + index * 4));
   return {
     bytes,
-    fileName: wiiPhysical ? 'wiiclipse-wii-boot-probe.dol' : 'wiiclipse-boot-probe.dol',
+    fileName: compute ? 'wiiclipse-compute-probe.dol' :
+      (wiiPhysical ? 'wiiclipse-wii-boot-probe.dol' : 'wiiclipse-boot-probe.dol'),
     width: 640,
     height: 240,
     samples: stripes.map(({ r, g, b }, index) => ({ x: 80 + index * 160, y: 120, r, g, b })),
@@ -83,6 +105,8 @@ function createFrameProbe(wiiPhysical = false) {
 }
 
 export function createBootProbe() { return createFrameProbe(); }
+
+export function createComputeProbe() { return createFrameProbe(false, true); }
 
 // This DOL is only for the WAD boot path: loading it as a standalone DOL is not a Wii boot test.
 export function createWiiBootDol() { return createFrameProbe(true); }

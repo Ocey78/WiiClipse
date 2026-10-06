@@ -9,6 +9,21 @@ BUILD_DIR="$WORK_DIR/wasm"
 OUT_DIR="$ROOT/public/core"
 DOLPHIN_REPO="https://github.com/libretro/dolphin.git"
 DOLPHIN_COMMIT="f8603f14e7f5a090e6693857d625a55ea9330534"
+BUILD_PROFILE="${DWEB_BUILD_PROFILE:-optimized}"
+COMPILER_FLAGS="-pthread"
+STACK_OVERFLOW_CHECK=2
+case "$BUILD_PROFILE" in
+  baseline) ;;
+  optimized)
+    # Full LTO keeps LLVM IR across translation units; SIMD enables vectorization
+    # of generic image/audio loops without selecting a native x86/ARM backend.
+    # Upstream ENABLE_LTO remains off because CMake IPO may select thin LTO;
+    # these explicit full-LTO flags are applied at compilation and final linking.
+    COMPILER_FLAGS+=" -msimd128 -flto=full"
+    STACK_OVERFLOW_CHECK=1
+    ;;
+  *) echo "Unknown DWEB_BUILD_PROFILE: $BUILD_PROFILE" >&2; exit 1 ;;
+esac
 
 for tool in git cmake ninja emcc em++ emcmake; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -45,8 +60,10 @@ mkdir -p "$BUILD_DIR"
 emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DEMSCRIPTEN_SYSTEM_PROCESSOR=wasm32 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_FLAGS="-pthread" \
-  -DCMAKE_CXX_FLAGS="-pthread" \
+  -DCMAKE_C_FLAGS="$COMPILER_FLAGS" \
+  -DCMAKE_CXX_FLAGS="$COMPILER_FLAGS" \
+  -DCMAKE_EXE_LINKER_FLAGS="$COMPILER_FLAGS" \
+  -DDWEB_STACK_OVERFLOW_CHECK="$STACK_OVERFLOW_CHECK" \
   -DENABLE_GENERIC=ON \
   -DLIBRETRO=ON \
   -DENABLE_QT=OFF \
@@ -101,4 +118,5 @@ if [[ ! -f "$OUT_DIR/dolphin-core.js" || ! -f "$OUT_DIR/dolphin-core.wasm" ]]; t
 fi
 
 echo "Dolphin WASM core built from $DOLPHIN_COMMIT"
+echo "Build profile: $BUILD_PROFILE ($COMPILER_FLAGS, stack checks $STACK_OVERFLOW_CHECK)"
 echo "Output: $OUT_DIR"

@@ -9,11 +9,12 @@ void main() {
 const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 uniform sampler2D uFrame;
+uniform bool uRGBA;
 in vec2 vTexCoord;
 out vec4 outColor;
 void main() {
-  vec4 xrgb = texture(uFrame, vTexCoord);
-  outColor = vec4(xrgb.b, xrgb.g, xrgb.r, 1.0);
+  vec4 pixel = texture(uFrame, vTexCoord);
+  outColor = vec4(uRGBA ? pixel.rgb : pixel.bgr, 1.0);
 }`;
 
 function compile(gl, type, source) {
@@ -42,6 +43,14 @@ export class WebGLRenderer {
     if (!this.gl) throw new Error('WebGL2 is required on iOS 18+.');
     this.frameWidth = 0;
     this.frameHeight = 0;
+    this.unpackRowLength = 0;
+    this.isRGBA = false;
+    this.stagingPixels = null;
+    this.sizeDirty = true;
+    this.resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+      this.sizeDirty = true;
+    }) : null;
+    this.resizeObserver?.observe(canvas);
     this.#createPipeline();
     this.resize();
   }
@@ -78,46 +87,80 @@ export class WebGLRenderer {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.useProgram(this.program);
     gl.uniform1i(gl.getUniformLocation(this.program, 'uFrame'), 0);
+    this.formatUniform = gl.getUniformLocation(this.program, 'uRGBA');
   }
 
   resize() {
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
     const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
-    if (this.canvas.width !== w || this.canvas.height !== h) {
-      this.canvas.width = w;
-      this.canvas.height = h;
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
+    if (this.viewportWidth !== w || this.viewportHeight !== h) {
+      this.gl.viewport(0, 0, w, h);
+      this.viewportWidth = w;
+      this.viewportHeight = h;
     }
-    this.gl.viewport(0, 0, w, h);
+    this.dpr = dpr;
+    this.sizeDirty = false;
+  }
+
+  #resizeIfNeeded() {
+    // DPR can change without a CSS-size notification (zoom or a new display).
+    if (this.sizeDirty || !this.resizeObserver || this.dpr !== Math.min(globalThis.devicePixelRatio || 1, 2)) {
+      this.resize();
+    }
   }
 
   clear() {
-    this.resize();
+    this.#resizeIfNeeded();
     this.gl.clearColor(0.025, 0.035, 0.055, 1);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
   }
 
-  presentXRGB8888({ buffer, width, height, pitch }) {
+  presentXRGB8888({ buffer, width, height, pitch, pixelFormat }) {
     if (!buffer || !width || !height) return;
     const gl = this.gl;
-    this.resize();
+    this.#resizeIfNeeded();
     const rowBytes = width * 4;
     const source = new Uint8Array(buffer);
     let pixels = source;
+    let rowLength = 0;
     if (pitch && pitch !== rowBytes) {
-      pixels = new Uint8Array(rowBytes * height);
-      for (let y = 0; y < height; y++) {
-        pixels.set(source.subarray(y * pitch, y * pitch + rowBytes), y * rowBytes);
+      if (pitch % 4 === 0) {
+        // WebGL2 accepts a source stride in pixels, avoiding a full-frame copy.
+        rowLength = pitch / 4;
+      } else {
+        // Preserve byte-pitched input too; only that exceptional case needs staging.
+        const length = rowBytes * height;
+        if (this.stagingPixels?.length !== length) this.stagingPixels = new Uint8Array(length);
+        pixels = this.stagingPixels;
+        for (let y = 0; y < height; y++) {
+          pixels.set(source.subarray(y * pitch, y * pitch + rowBytes), y * rowBytes);
+        }
       }
     }
 
+    if (this.unpackRowLength !== rowLength) {
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, rowLength);
+      this.unpackRowLength = rowLength;
+    }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    if (this.frameWidth !== width || this.frameHeight !== height) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      this.frameWidth = width;
+      this.frameHeight = height;
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    }
     gl.useProgram(this.program);
+    const isRGBA = pixelFormat === 'RGBA8888';
+    if (isRGBA !== this.isRGBA) {
+      gl.uniform1i(this.formatUniform, isRGBA ? 1 : 0);
+      this.isRGBA = isRGBA;
+    }
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    this.frameWidth = width;
-    this.frameHeight = height;
   }
 }

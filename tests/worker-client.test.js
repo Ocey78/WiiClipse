@@ -113,3 +113,20 @@ test('terminating a loading worker settles its pending initialization', async ()
   await rejected;
   assert.equal(client.isReady(), false);
 });
+
+test('frame completion can dispatch the next frame immediately and preserves console timing', async () => {
+  let client;
+  let nextDispatched;
+  const ready = await readyClient({ onFrameDone: ({ frameRate }) => {
+    assert.equal(frameRate, 50);
+    nextDispatched = client.runFrame();
+  } });
+  client = ready.client;
+  const boot = client.bootGame({ name: 'pal.dol' });
+  ready.worker.emit({ type: 'booted', frameRate: 50 });
+  assert.deepEqual(await boot, { frameRate: 50 });
+  assert.equal(client.runFrame(), true);
+  assert.equal(client.runFrame(), false);
+  ready.worker.emit({ type: 'frame-done', frameRate: 50 });
+  assert.equal(nextDispatched, true);
+});

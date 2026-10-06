@@ -4,6 +4,7 @@ import { InputState } from './input-state.js';
 import { DolphinWorkerClient } from './dolphin-worker-client.js';
 import { WebGLRenderer } from './webgl-renderer.js';
 import { AudioSink } from './audio-sink.js';
+import { FrameScheduler } from './frame-scheduler.js';
 
 const $ = (selector) => document.querySelector(selector);
 const caps = detectCapabilities();
@@ -16,6 +17,8 @@ let selectedGame = null;
 let gameRunning = false;
 let gameBooting = false;
 let runningGame = null;
+let scheduler = null;
+let sentInputRevision = -1;
 
 try {
   renderer = new WebGLRenderer(canvas);
@@ -41,9 +44,12 @@ try {
 const core = worker ? new DolphinWorkerClient(worker, {
   onVideo: (frame) => renderer?.presentXRGB8888(frame),
   onAudio: (chunk) => audio.push(chunk),
+  onFrameDone: ({ frameRate }) => scheduler?.frameDone(frameRate),
   onStatus: (message) => { if (message) $('#status').textContent = rendererError?.message || message; },
   onLog: ({ level = 'info', message = '' }) => console[level === 'error' ? 'error' : 'log'](`[Dolphin] ${message}`),
   onError: (error) => {
+    scheduler?.stop();
+    audio.reset();
     $('#status').textContent = error.message;
     if (!core.isReady()) {
       $('#coreState').textContent = 'Native core unavailable';
@@ -54,6 +60,13 @@ const core = worker ? new DolphinWorkerClient(worker, {
     updatePlayState();
   },
 }) : null;
+scheduler = new FrameScheduler(() => core?.runFrame() || false);
+
+function sendInput(force = false) {
+  if (!core?.isReady() || (!force && sentInputRevision === input.revision)) return;
+  core.setInput(input.snapshot());
+  sentInputRevision = input.revision;
+}
 
 function updatePlayState() {
   $('#play').disabled = !renderer || !selectedGame || !core?.isReady() || gameBooting
@@ -107,11 +120,16 @@ $('#play').addEventListener('click', async () => {
   updatePlayState();
   try {
     await audio.resume();
+    scheduler.stop();
+    audio.reset();
     $('#status').textContent = 'Sending game to Dolphin worker…';
     gameRunning = false;
-    await core.bootGame(game);
+    const { frameRate } = await core.bootGame(game);
     gameRunning = true;
     runningGame = game;
+    sendInput(true);
+    scheduler.setPaused(document.visibilityState === 'hidden');
+    scheduler.start(frameRate);
   } catch (error) {
     gameRunning = false;
     runningGame = null;
@@ -127,13 +145,13 @@ for (const element of document.querySelectorAll('[data-button]')) {
   const on = (event) => {
     event.preventDefault();
     input.setButton(name, true);
-    core?.setInput(input.snapshot());
+    sendInput();
     element.classList.add('active');
   };
   const off = (event) => {
     event.preventDefault();
     input.setButton(name, false);
-    core?.setInput(input.snapshot());
+    sendInput();
     element.classList.remove('active');
   };
   element.addEventListener('pointerdown', on);
@@ -164,15 +182,20 @@ function pollGamepad() {
     input.setAxis('ry', gp.axes[3] || 0);
     input.setAxis('l', gp.buttons[6]?.value || 0);
     input.setAxis('r', gp.buttons[7]?.value || 0);
-    core?.setInput(input.snapshot());
+    sendInput();
   }
 
-  if (gameRunning && core?.isReady()) core.runFrame();
   requestAnimationFrame(pollGamepad);
 }
 requestAnimationFrame(pollGamepad);
 
-window.addEventListener('pagehide', () => core?.syncSaves());
+function pausePlayback(paused) {
+  scheduler.setPaused(paused);
+  audio.setPaused(paused).catch(() => {});
+  if (paused) core?.syncSaves();
+}
+window.addEventListener('pagehide', () => pausePlayback(true));
+window.addEventListener('pageshow', () => pausePlayback(document.visibilityState === 'hidden'));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') core?.syncSaves();
+  pausePlayback(document.visibilityState === 'hidden');
 });

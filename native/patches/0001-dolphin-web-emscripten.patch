@@ -20,11 +20,14 @@
  if(ENABLE_VULKAN)
    target_sources(dolphin_libretro PRIVATE
      Vulkan.cpp
-@@ -27,6 +33,38 @@
+@@ -27,6 +33,41 @@
  set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
  
  set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
 +if(EMSCRIPTEN)
++  if(NOT DEFINED DWEB_STACK_OVERFLOW_CHECK)
++    set(DWEB_STACK_OVERFLOW_CHECK 2)
++  endif()
 +  set_target_properties(dolphin_libretro PROPERTIES OUTPUT_NAME "dolphin-core" SUFFIX ".js")
 +  target_compile_options(dolphin_libretro PRIVATE -pthread)
 +  target_link_options(dolphin_libretro PRIVATE
@@ -41,7 +44,7 @@
 +    # Reserve explicit stacks and diagnose overflow in this experimental port.
 +    "-sSTACK_SIZE=8388608"
 +    "-sDEFAULT_PTHREAD_STACK_SIZE=2097152"
-+    "-sSTACK_OVERFLOW_CHECK=2"
++    "-sSTACK_OVERFLOW_CHECK=${DWEB_STACK_OVERFLOW_CHECK}"
 +    # DVD, resources, input scanning, saves, and Wii services still use threads
 +    # in single-core mode. Fail on exhaustion instead of blocking on a new worker.
 +    "-sPTHREAD_POOL_SIZE=24"

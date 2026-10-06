@@ -49,11 +49,14 @@ export class DolphinWorkerClient {
       }
       case 'booted':
         this.running = true;
-        this.resolveBoot?.();
+        this.resolveBoot?.({ frameRate: message.frameRate || 60 });
         this.resolveBoot = null;
         this.rejectBoot = null;
         break;
-      case 'frame-done': this.framePending = false; break;
+      case 'frame-done':
+        this.framePending = false;
+        this.callbacks.onFrameDone?.(message);
+        break;
       case 'video': this.callbacks.onVideo?.(message); break;
       case 'audio': this.callbacks.onAudio?.(message); break;
       case 'status': this.callbacks.onStatus?.(message.message || ''); break;
@@ -90,10 +93,10 @@ export class DolphinWorkerClient {
   }
   setInput(snapshot) { if (this.ready) this.worker.postMessage({ type: 'input', snapshot }); }
   runFrame() {
-    if (!this.ready || !this.running || this.framePending) return;
+    if (!this.ready || !this.running || this.framePending) return false;
     this.framePending = true;
-    try { this.worker.postMessage({ type: 'frame' }); }
-    catch (error) { this.#fail(error); }
+    try { this.worker.postMessage({ type: 'frame' }); return true; }
+    catch (error) { this.#fail(error); return false; }
   }
   unloadGame() {
     this.running = false;

@@ -54,3 +54,24 @@ test('adapter maps GameCube buttons and axes into the browser host ABI', async (
   assert.ok(mod.calls.some(c => c[0] === 'axis' && c[1] === GAMECUBE_AXIS_IDS.lx && c[2] === 0.5));
   assert.ok(mod.calls.some(c => c[0] === 'axis' && c[1] === GAMECUBE_AXIS_IDS.ly && c[2] === -1));
 });
+
+test('unchanged input avoids native calls while button and axis releases are sent', async () => {
+  const mod = fakeModule();
+  const adapter = new DolphinWasmAdapter(mod);
+  await adapter.init();
+  adapter.setInput({ buttons: { A: true }, axes: { lx: 1 } });
+  const count = mod.calls.length;
+  adapter.setInput({ buttons: { A: true }, axes: { lx: 2 } });
+  assert.equal(mod.calls.length, count);
+  adapter.setInput({});
+  assert.deepEqual(mod.calls.slice(count), [['button', GAMECUBE_BUTTON_IDS.A, 0], ['axis', GAMECUBE_AXIS_IDS.lx, 0]]);
+});
+
+test('refresh rate uses the optional native export and falls back for older cores', () => {
+  const mod = fakeModule();
+  assert.equal(new DolphinWasmAdapter(mod).getFrameRate(), 60);
+  mod._dweb_get_frame_rate = () => 50;
+  assert.equal(new DolphinWasmAdapter(mod).getFrameRate(), 50);
+  mod._dweb_get_frame_rate = () => NaN;
+  assert.equal(new DolphinWasmAdapter(mod).getFrameRate(), 60);
+});

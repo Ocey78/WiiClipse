@@ -34,6 +34,8 @@ export class DolphinWasmAdapter {
     this.module = module;
     this.ready = false;
     this.running = false;
+    this.lastButtons = [];
+    this.lastAxes = [];
     this.native = {
       init: module.cwrap('dweb_init', 'number', []),
       loadGame: module.cwrap('dweb_load_game', 'number', ['string']),
@@ -60,10 +62,17 @@ export class DolphinWasmAdapter {
 
   isReady() { return this.ready; }
 
+  getFrameRate() {
+    const rate = this.module._dweb_get_frame_rate?.();
+    return Number.isFinite(rate) && rate >= 20 && rate <= 120 ? rate : 60;
+  }
+
   async bootGamePath(path) {
     if (!this.ready) throw new Error('Dolphin core is not initialized.');
     if (!path) throw new Error('A mounted game path is required.');
     if (!this.native.loadGame(path)) throw new Error(`Dolphin rejected ${path}.`);
+    this.lastButtons = [];
+    this.lastAxes = [];
     this.running = true;
   }
 
@@ -77,10 +86,18 @@ export class DolphinWasmAdapter {
     const axes = snapshot.axes || {};
 
     for (const [name, id] of Object.entries(GAMECUBE_BUTTON_IDS)) {
-      this.native.setButton(id, buttons[name] ? 1 : 0);
+      const value = buttons[name] ? 1 : 0;
+      if (this.lastButtons[id] !== value) {
+        this.native.setButton(id, value);
+        this.lastButtons[id] = value;
+      }
     }
     for (const [name, id] of Object.entries(GAMECUBE_AXIS_IDS)) {
-      this.native.setAxis(id, clamp(axes[name]));
+      const value = clamp(axes[name]);
+      if (this.lastAxes[id] !== value) {
+        this.native.setAxis(id, value);
+        this.lastAxes[id] = value;
+      }
     }
   }
 

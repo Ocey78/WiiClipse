@@ -12,6 +12,11 @@
 #include <string>
 
 extern "C" bool dolphin_browser_start_game();
+namespace Libretro
+{
+extern double g_core_refresh_rate;
+namespace Audio { unsigned int GetActiveSampleRate(); }
+}
 
 namespace
 {
@@ -24,6 +29,10 @@ std::array<float, 8> s_axes{};
 bool s_initialized = false;
 bool s_game_loaded = false;
 std::string s_version = "dolphin-web";
+constexpr size_t kAudioBatchFrames = 2048;
+std::array<int16_t, kAudioBatchFrames * 2> s_audio_samples{};
+size_t s_audio_frames = 0;
+unsigned s_audio_rate = 0;
 
 EM_JS(void, WebPostStatus, (const char* text), {
   self.postMessage({ type: 'status', message: UTF8ToString(text) });
@@ -41,12 +50,29 @@ EM_JS(void, WebPostVideo, (const void* data, unsigned width, unsigned height, si
   self.postMessage({ type: 'video', width, height, pitch: Number(pitch), buffer: copy.buffer }, [copy.buffer]);
 });
 
-EM_JS(size_t, WebPostAudio, (const int16_t* data, size_t frames), {
+EM_JS(void, WebPostRGBA, (const void* data, unsigned width, unsigned height, size_t pitch), {
+  if (!data || !width || !height || Number(pitch) < Number(width) * 4) return;
+  const rowBytes = Number(width) * 4;
+  let copy;
+  if (Number(pitch) === rowBytes) {
+    copy = HEAPU8.slice(Number(data), Number(data) + rowBytes * Number(height));
+  } else {
+    copy = new Uint8Array(rowBytes * Number(height));
+    for (let y = 0; y < Number(height); ++y) {
+      const row = Number(data) + y * Number(pitch);
+      copy.set(HEAPU8.subarray(row, row + rowBytes), y * rowBytes);
+    }
+  }
+  self.postMessage({ type: 'video', width, height, pitch: rowBytes,
+    pixelFormat: 'RGBA8888', buffer: copy.buffer }, [copy.buffer]);
+});
+
+EM_JS(size_t, WebPostAudio, (const int16_t* data, size_t frames, unsigned sample_rate), {
   if (!data || !frames) return Number(frames);
   const sampleCount = Number(frames) * 2;
   const start = Number(data) >> 1;
   const copy = HEAP16.slice(start, start + sampleCount);
-  self.postMessage({ type: 'audio', frames: Number(frames), sampleRate: 48000, buffer: copy.buffer }, [copy.buffer]);
+  self.postMessage({ type: 'audio', frames: Number(frames), sampleRate: Number(sample_rate), buffer: copy.buffer }, [copy.buffer]);
   return Number(frames);
 });
 
@@ -243,15 +269,37 @@ void BrowserVideoRefresh(const void* data, unsigned width, unsigned height, size
   WebPostVideo(data, width, height, pitch);
 }
 
-void BrowserAudioSample(int16_t left, int16_t right)
+void FlushAudio()
 {
-  const int16_t samples[2] = {left, right};
-  WebPostAudio(samples, 1);
+  if (s_audio_frames)
+    WebPostAudio(s_audio_samples.data(), s_audio_frames, s_audio_rate);
+  s_audio_frames = 0;
 }
 
 size_t BrowserAudioBatch(const int16_t* data, size_t frames)
 {
-  return WebPostAudio(data, frames);
+  const unsigned rate = Libretro::Audio::GetActiveSampleRate();
+  if (s_audio_frames && rate != s_audio_rate)
+    FlushAudio();
+  s_audio_rate = rate;
+  size_t remaining = frames;
+  while (remaining)
+  {
+    const size_t count = std::min(remaining, kAudioBatchFrames - s_audio_frames);
+    std::copy_n(data, count * 2, s_audio_samples.data() + s_audio_frames * 2);
+    data += count * 2;
+    remaining -= count;
+    s_audio_frames += count;
+    if (s_audio_frames == kAudioBatchFrames)
+      FlushAudio();
+  }
+  return frames;
+}
+
+void BrowserAudioSample(int16_t left, int16_t right)
+{
+  const int16_t samples[2] = {left, right};
+  BrowserAudioBatch(samples, 1);
 }
 
 void BrowserInputPoll()
@@ -300,6 +348,11 @@ int16_t BrowserInputState(unsigned port, unsigned device, unsigned index, unsign
 
 extern "C"
 {
+void dolphin_browser_present_rgba(const void* data, unsigned width, unsigned height, size_t pitch)
+{
+  WebPostRGBA(data, width, height, pitch);
+}
+
 EMSCRIPTEN_KEEPALIVE int dweb_init()
 {
   if (s_initialized)
@@ -333,10 +386,16 @@ EMSCRIPTEN_KEEPALIVE const char* dweb_version()
   return s_version.c_str();
 }
 
+EMSCRIPTEN_KEEPALIVE double dweb_get_frame_rate()
+{
+  return Libretro::g_core_refresh_rate > 1.0 ? Libretro::g_core_refresh_rate : 60.0;
+}
+
 EMSCRIPTEN_KEEPALIVE int dweb_load_game(const char* path)
 {
   if (!s_initialized || !path || !*path)
     return 0;
+  s_audio_frames = 0;
   if (s_game_loaded)
   {
     retro_unload_game();
@@ -372,6 +431,7 @@ EMSCRIPTEN_KEEPALIVE void dweb_run_frame()
 {
   if (s_initialized && s_game_loaded)
     retro_run();
+  FlushAudio();
   DrainWebMessages();
 }
 
@@ -389,6 +449,7 @@ EMSCRIPTEN_KEEPALIVE void dweb_set_axis(int id, float value)
 
 EMSCRIPTEN_KEEPALIVE void dweb_unload_game()
 {
+  s_audio_frames = 0;
   if (s_initialized && s_game_loaded)
   {
     retro_unload_game();

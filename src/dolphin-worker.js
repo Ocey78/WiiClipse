@@ -117,7 +117,7 @@ self.addEventListener('message', async ({ data = {} }) => {
         running = true;
         frameCount = 0;
         status('Running');
-        send('booted');
+        send('booted', { frameRate: adapter.getFrameRate() });
         break;
       }
       case 'frame':
@@ -126,7 +126,7 @@ self.addEventListener('message', async ({ data = {} }) => {
           frameCount++;
           if (frameCount % 600 === 0) syncFS(false).catch(() => {});
         }
-        send('frame-done');
+        send('frame-done', { frameRate: adapter?.getFrameRate() || 60 });
         break;
       case 'input': adapter?.setInput(data.snapshot); break;
       case 'unload': await unmountGame(); status('Game unloaded'); break;

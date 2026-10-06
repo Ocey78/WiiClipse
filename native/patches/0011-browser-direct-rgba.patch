@@ -1,0 +1,83 @@
+--- a/Source/Core/DolphinLibretro/Video.h
++++ b/Source/Core/DolphinLibretro/Video.h
+@@ -4,7 +4,7 @@
+ #include "DolphinLibretro/Common/Globals.h"
+ #include "DolphinLibretro/Common/Options.h"
+ #ifdef __EMSCRIPTEN__
+-#include "DolphinLibretro/SoftwareFrame.h"
++#include "DolphinLibretro/BrowserFrame.h"
+ #endif
+ #include "VideoBackends/Null/NullGfx.h"
+ #include "VideoBackends/Software/SWOGLWindow.h"
+@@ -70,13 +70,12 @@
+                  const MathUtil::Rectangle<int>& source_rc) override
+   {
+ #ifdef __EMSCRIPTEN__
+-    if (m_frame.CopyRGBA(static_cast<const SW::SWTexture*>(source_texture)->GetData(0, 0),
+-                         source_texture->GetWidth(), source_texture->GetHeight(),
+-                         source_rc.left, source_rc.top, source_rc.right, source_rc.bottom))
+-    {
+-      video_cb(m_frame.pixels.data(), m_frame.width, m_frame.height,
+-               static_cast<size_t>(m_frame.width) * sizeof(u32));
+-    }
++    const auto frame = BrowserFrame::Crop(
++        static_cast<const SW::SWTexture*>(source_texture)->GetData(0, 0),
++        source_texture->GetWidth(), source_texture->GetHeight(),
++        source_rc.left, source_rc.top, source_rc.right, source_rc.bottom);
++    if (frame.data)
++      dolphin_browser_present_rgba(frame.data, frame.width, frame.height, frame.pitch);
+ #else
+     SW::SWGfx::ShowImage(source_texture, source_rc);
+     video_cb(
+@@ -88,10 +87,6 @@
+ #endif
+     UpdateActiveConfig();
+   }
+-#ifdef __EMSCRIPTEN__
+-private:
+-  SoftwareFrame m_frame;
+-#endif
+ };
+ 
+ class NullGfx : public Null::NullGfx
+--- /dev/null
++++ b/Source/Core/DolphinLibretro/BrowserFrame.h
+@@ -0,0 +1,38 @@
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++
++// This browser-only hook leaves libretro's XRGB8888 callback contract intact.
++extern "C" void dolphin_browser_present_rgba(const void* data, unsigned width,
++                                             unsigned height, std::size_t pitch);
++
++namespace Libretro::Video
++{
++struct BrowserFrame
++{
++  const std::uint8_t* data = nullptr;
++  unsigned width = 0;
++  unsigned height = 0;
++  std::size_t pitch = 0;
++
++  // A bounded view into the source texture; copying into the transferable browser
++  // buffer happens once in the host, without a temporary color-swizzled image.
++  static BrowserFrame Crop(const std::uint8_t* source, unsigned source_width,
++                           unsigned source_height, int left, int top, int right, int bottom)
++  {
++    if (!source || !source_width || !source_height)
++      return {};
++    left = std::clamp(left, 0, static_cast<int>(source_width));
++    top = std::clamp(top, 0, static_cast<int>(source_height));
++    right = std::clamp(right, 0, static_cast<int>(source_width));
++    bottom = std::clamp(bottom, 0, static_cast<int>(source_height));
++    if (left >= right || top >= bottom)
++      return {};
++    return {source + (static_cast<std::size_t>(top) * source_width + left) * 4,
++            static_cast<unsigned>(right - left), static_cast<unsigned>(bottom - top),
++            static_cast<std::size_t>(source_width) * 4};
++  }
++};
++}  // namespace Libretro::Video

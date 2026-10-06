@@ -9,3 +9,4 @@ public/core/
 dist/core/
 native-release/
 native-browser-smoke.log
+native-performance/

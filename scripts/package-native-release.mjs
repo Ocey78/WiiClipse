@@ -17,6 +17,8 @@ const coreDir = path.join(root, 'public/core');
 const tag = `core-${hostCommit.slice(0, 12)}-${runId}`;
 const dolphinCommit = 'f8603f14e7f5a090e6693857d625a55ea9330534';
 const emscripten = process.env.EMSCRIPTEN_VERSION;
+const buildProfile = process.env.DWEB_BUILD_PROFILE || 'optimized';
+if (!['baseline', 'optimized'].includes(buildProfile)) throw new Error('Known native build profile required.');
 if (!/^\d+\.\d+\.\d+$/.test(emscripten || '')) throw new Error('Pinned Emscripten version required.');
 await fs.mkdir(releaseDir, { recursive: false });
 
@@ -52,7 +54,7 @@ const packed = spawnSync('tar', [
 if (packed.error) throw packed.error;
 if (packed.status !== 0) throw new Error(`Source archive failed: ${packed.status}`);
 const source = { name: sourceName, sha256: await sha256(sourceFile) };
-const manifest = { schemaVersion: 1, tag, hostCommit, dolphinCommit, emscripten, runId, source, files };
+const manifest = { schemaVersion: 1, tag, hostCommit, dolphinCommit, emscripten, buildProfile, runId, source, files };
 await fs.writeFile(path.join(releaseDir, 'native-core-release.json'), JSON.stringify(manifest, null, 2) + '\n');
 await fs.writeFile(path.join(releaseDir, 'SHA256SUMS.txt'), [...files, source]
   .map(file => `${file.sha256}  ${file.name}`).join('\n') + '\n');
@@ -65,6 +67,7 @@ await fs.writeFile(path.join(releaseDir, 'release-notes.md'), [
   `Dolphin source: libretro/dolphin@${dolphinCommit}`,
   `Browser port and build scripts: Ocey78/WiiClipse@${hostCommit}`,
   `Emscripten: ${emscripten}`,
+  `Compiler profile: ${buildProfile}`,
   `Build and verification: https://github.com/Ocey78/WiiClipse/actions/runs/${runId}`,
   '',
   'The source archive contains the complete patched Dolphin checkout and its dependencies, including license files, plus the browser host, patches, test probes, and reproducible build scripts. The release tag retains the matching frontend.',

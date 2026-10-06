@@ -2,6 +2,14 @@ name: Build experimental Dolphin core
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Compiler profile for measured core comparisons
+        type: choice
+        default: optimized
+        options:
+          - optimized
+          - baseline
 
 permissions:
   contents: read
@@ -12,6 +20,7 @@ jobs:
     timeout-minutes: 60
     env:
       EMSCRIPTEN_VERSION: 4.0.23
+      DWEB_BUILD_PROFILE: ${{ inputs.profile }}
       CCACHE_DIR: ${{ github.workspace }}/native/.ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_MAXSIZE: 2G
@@ -62,14 +71,32 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Verify native browser media boundary
+        run: node --test native/tests/browser-media.test.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium
+      - name: Verify browser frame scheduling
+        run: node tests/scheduler-browser.mjs
+      - name: Verify browser renderer pixels and resizing
+        run: node tests/renderer-browser.mjs
       - name: Boot original GameCube DOL and Wii WAD in Chromium
         env:
           EXPECT_CORE_READY: '1'
         run: |
           set -o pipefail
           npm run test:browser 2>&1 | tee native-browser-smoke.log
+      - name: Verify browser audio streaming
+        run: node tests/browser-audio.mjs
+      - name: Compare compute throughput with pinned release
+        run: node native/tests/compare-core-performance.mjs
+      - name: Upload native performance comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-performance-comparison
+          path: native-performance/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload native diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4

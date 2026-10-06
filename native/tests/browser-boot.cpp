@@ -16,11 +16,28 @@ int starts = 0;
 int unloads = 0;
 int frames = 0;
 std::vector<std::string> logs;
+std::vector<size_t> audio_frames;
+std::vector<unsigned> audio_rates;
+std::vector<int16_t> audio_samples;
+unsigned active_sample_rate = 32029;
 
 void WebPostStatus(const char*) {}
 void WebPostLog(int, const char* text) { logs.emplace_back(text); }
 void WebPostVideo(const void*, unsigned, unsigned, size_t) {}
-size_t WebPostAudio(const int16_t*, size_t count) { return count; }
+void WebPostRGBA(const void*, unsigned, unsigned, size_t) {}
+size_t WebPostAudio(const int16_t* samples, size_t count, unsigned rate)
+{
+  audio_frames.push_back(count);
+  audio_rates.push_back(rate);
+  audio_samples.insert(audio_samples.end(), samples, samples + count * 2);
+  return count;
+}
+}
+
+namespace Libretro
+{
+double g_core_refresh_rate = 59.94;
+namespace Audio { unsigned int GetActiveSampleRate() { return active_sample_rate; } }
 }
 
 extern "C"
@@ -65,6 +82,9 @@ int main()
 {
   assert(dweb_init() == 1);
   assert(!controller_selected);
+  assert(dweb_get_frame_rate() == 59.94);
+  Libretro::g_core_refresh_rate = 50.0;
+  assert(dweb_get_frame_rate() == 50.0);
   assert(dweb_load_game("/bad.dol") == 0);
   assert(starts == 0 && unloads == 0);
 
@@ -112,6 +132,40 @@ int main()
   dweb_run_frame();
   assert(logs.size() - before_drain <= 128);
   assert(logs.back() == "bounded message 999");
+
+  std::array<int16_t, 192> small_audio{};
+  for (size_t i = 0; i < small_audio.size(); ++i)
+    small_audio[i] = static_cast<int16_t>(i - 96);
+  for (int i = 0; i < 6; ++i)
+    assert(BrowserAudioBatch(small_audio.data(), 96) == 96);
+  assert(audio_frames.empty());
+  dweb_run_frame();
+  assert((audio_frames == std::vector<size_t>{576}));
+  assert(audio_rates[0] == 32029);
+  for (size_t i = 0; i < audio_samples.size(); ++i)
+    assert(audio_samples[i] == small_audio[i % small_audio.size()]);
+
+  BrowserAudioSample(123, -456);
+  active_sample_rate = 32000;
+  BrowserAudioSample(789, -123);
+  assert(audio_frames.back() == 1 && audio_rates.back() == 32029);
+  FlushAudio();
+  assert(audio_frames.back() == 1 && audio_rates.back() == 32000);
+  assert(audio_samples[audio_samples.size() - 4] == 123);
+  assert(audio_samples.back() == -123);
+
+  const size_t before_large = audio_frames.size();
+  std::vector<int16_t> large_audio(5000 * 2, 77);
+  BrowserAudioBatch(large_audio.data(), 5000);
+  FlushAudio();
+  assert(audio_frames.size() == before_large + 3);
+  assert(audio_frames[before_large] == 2048 && audio_frames[before_large + 1] == 2048);
+  assert(audio_frames.back() == 904);
+  const size_t before_discard = audio_frames.size();
+  BrowserAudioSample(1, 2);
+  dweb_unload_game();
+  dweb_run_frame();
+  assert(audio_frames.size() == before_discard);
   dweb_shutdown();
   std::puts("Browser host contract: startup result, retry, unload, and queued logs passed (stub core).");
 }

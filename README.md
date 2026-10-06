@@ -10,7 +10,9 @@ The file picker accepts GameCube ISO/GCM images, DOL/ELF homebrew, and bootable 
 
 ## What is implemented
 
-The web runtime now has a real Dolphin integration boundary built around the maintained `libretro/dolphin` frontend. Selected ISO/GCM/DOL/ELF/WAD files are sent to the emulator worker as browser `File` objects and mounted with Emscripten WORKERFS instead of being copied into a giant JavaScript `ArrayBuffer`. The worker mounts persistent saves with IDBFS, forwards controller state into a native C++ frontend, receives XRGB8888 software-rendered frames, sends them to WebGL2, and queues stereo audio through WebAudio.
+The web runtime has a real Dolphin integration boundary built around the maintained `libretro/dolphin` frontend. Selected ISO/GCM/DOL/ELF/WAD files are sent to the emulator worker as browser `File` objects and mounted with Emscripten WORKERFS instead of being copied into a giant JavaScript `ArrayBuffer`. The worker mounts persistent saves with IDBFS, forwards changed controller state into a native C++ frontend, and presents software-rendered frames through persistent WebGL2 textures. New native builds send RGBA directly; the frontend also accepts older XRGB cores.
+
+Frame completion drives emulation independently of display refresh, with one frame in flight and a limit set by the console's refresh rate. Hidden pages pause emulation and audio. Audio uses a fixed-size shared PCM ring and one AudioWorklet with source-rate conversion; browsers without that path use a reusable playback fallback. Native builds batch audio at frame completion.
 
 The native browser host forces compatibility-first settings for a normal Safari web app: Dolphin Cached Interpreter, single-core CPU emulation, fastmem disabled, fastmem arena disabled, DSP JIT disabled, 1x EFB, and the Software Renderer. This is intentionally slower than native Dolphin, but it avoids requiring native executable-memory/JIT privileges.
 
@@ -45,6 +47,8 @@ npm run build
 ```
 
 The native build pins `libretro/dolphin` to commit `f8603f14e7f5a090e6693857d625a55ea9330534`, applies the numbered patches in `native/patches/`, injects `native/BrowserHost.cpp`, and writes the resulting Emscripten artifacts to `public/core/`.
+
+The default `optimized` compiler profile enables full LLVM link-time optimization and WebAssembly SIMD. `DWEB_BUILD_PROFILE=baseline` retains scalar compilation for comparisons. The native workflow compares both the candidate and pinned release using three alternating runs of the same original compute-heavy DOL on one runner. These measurements cover native execution and worker communication; they are not commercial-game FPS results. Browser renderer, audio, and scheduler checks run separately.
 
 See [`native/README.md`](native/README.md) for prerequisites and hosting requirements.
 

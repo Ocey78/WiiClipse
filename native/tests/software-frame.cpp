@@ -1,4 +1,5 @@
 #include "DolphinLibretro/SoftwareFrame.h"
+#include "DolphinLibretro/BrowserFrame.h"
 
 #include <array>
 #include <cassert>
@@ -33,5 +34,15 @@ int main()
   assert(!frame.CopyRGBA(rgba.data(), 3, 2, 2, 1, 1, 0));
   assert(!frame.CopyRGBA(nullptr, 3, 2, 0, 0, 3, 2));
   assert(!frame.CopyRGBA(rgba.data(), 0, 2, 0, 0, 3, 2));
+  const auto view = Libretro::Video::BrowserFrame::Crop(rgba.data(), 3, 2, 1, 0, 3, 2);
+  assert(view.data == rgba.data() + 4 && view.width == 2 && view.height == 2);
+  assert(view.pitch == 12 && view.data[view.pitch] == 68);
+  const auto bottom = Libretro::Video::BrowserFrame::Crop(rgba.data(), 3, 2, 1, 1, 2, 2);
+  assert(bottom.data == rgba.data() + 16 && bottom.width == 1 && bottom.height == 1);
+  const auto clipped = Libretro::Video::BrowserFrame::Crop(rgba.data(), 3, 2, -1, -1, 4, 3);
+  assert(clipped.data == rgba.data() && clipped.width == 3 && clipped.height == 2);
+  assert(!Libretro::Video::BrowserFrame::Crop(nullptr, 3, 2, 0, 0, 3, 2).data);
+  assert(!Libretro::Video::BrowserFrame::Crop(rgba.data(), 3, 2, 3, 0, 4, 1).data);
+  assert(!Libretro::Video::BrowserFrame::Crop(rgba.data(), 3, 2, 2, 1, 1, 0).data);
   std::puts("Software frame conversion: channel order, crop, stride, and bounds passed.");
 }
