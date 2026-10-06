@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#0b1020">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Dolphin Web</title>
+</head>
+<body>
+<main class="app">
+  <header>
+    <div><h1>Dolphin Web</h1><p>iOS 18+ • client-side Dolphin/WASM</p></div>
+    <div id="coreState" class="core-state">Loading Dolphin core…</div>
+  </header>
+  <section class="screen-wrap">
+    <canvas id="screen"></canvas>
+    <div id="status" class="status">Loading Dolphin core…</div>
+  </section>
+  <section class="library">
+    <input id="gameFile" type="file" accept=".iso,.gcm,.dol,.elf" hidden>
+    <button id="chooseGame" class="primary">Choose Game</button>
+    <div class="game"><strong id="gameName">No game selected</strong><span id="gameMeta">ISO/GCM/DOL/ELF files stay on this device.</span></div>
+    <button id="play" disabled>Play</button>
+  </section>
+  <section><h2>Browser capabilities</h2><div id="capabilities" class="badges"></div></section>
+  <section class="controller" aria-label="GameCube touch controller">
+    <div class="dpad"><button data-button="UP">▲</button><div><button data-button="LEFT">◀</button><button data-button="RIGHT">▶</button></div><button data-button="DOWN">▼</button></div>
+    <div class="center"><button data-button="START">START</button></div>
+    <div class="face"><button class="x" data-button="X">X</button><button class="y" data-button="Y">Y</button><button class="a" data-button="A">A</button><button class="b" data-button="B">B</button></div>
+  </section>
+  <footer>Cached-interpreter CPU • WebGL2 display • local files • no server streaming</footer>
+</main>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>

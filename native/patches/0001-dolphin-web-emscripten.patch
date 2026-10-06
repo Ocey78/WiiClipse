@@ -1,0 +1,52 @@
+--- a/Source/Core/DolphinLibretro/CMakeLists.txt
++++ b/Source/Core/DolphinLibretro/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ 
+-add_library(dolphin_libretro SHARED
++set(DOLPHIN_LIBRETRO_SOURCES
+   Audio.cpp
+   Boot.cpp
+   Host.cpp
+@@ -9,6 +9,12 @@
+   Video.cpp
+ )
+ 
++if(EMSCRIPTEN)
++  add_executable(dolphin_libretro ${DOLPHIN_LIBRETRO_SOURCES} BrowserHost.cpp)
++else()
++  add_library(dolphin_libretro SHARED ${DOLPHIN_LIBRETRO_SOURCES})
++endif()
++
+ if(ENABLE_VULKAN)
+   target_sources(dolphin_libretro PRIVATE
+     Vulkan.cpp
+@@ -27,6 +33,29 @@
+ set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
+ 
+ set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
++if(EMSCRIPTEN)
++  set_target_properties(dolphin_libretro PROPERTIES OUTPUT_NAME "dolphin-core" SUFFIX ".js")
++  target_compile_options(dolphin_libretro PRIVATE -pthread)
++  target_link_options(dolphin_libretro PRIVATE
++    -pthread
++    "-sMODULARIZE=1"
++    "-sEXPORT_ES6=1"
++    "-sEXPORT_NAME=createDolphinModule"
++    "-sENVIRONMENT=worker"
++    "-sALLOW_MEMORY_GROWTH=1"
++    "-sINITIAL_MEMORY=268435456"
++    "-sMAXIMUM_MEMORY=2147483648"
++    "-sPTHREAD_POOL_SIZE=1"
++    "-sFORCE_FILESYSTEM=1"
++    "-sUSE_WEBGL2=1"
++    "-sFULL_ES3=1"
++    "-sEXPORTED_RUNTIME_METHODS=['FS','cwrap']"
++    "-lworkerfs.js"
++    "-lidbfs.js"
++    "--preload-file"
++    "${CMAKE_SOURCE_DIR}/Data/Sys@/dolphin/system/dolphin-emu/Sys"
++  )
++endif()
+ if(ANDROID)
+    target_sources(dolphin_libretro PRIVATE
+      ../../Android/jni/AndroidCommon/IDCache.cpp
