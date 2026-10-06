@@ -34,8 +34,13 @@ jobs:
             export EXPECT_CORE_READY=1
           fi
           npm run test:browser
-      - name: Check WebKit startup
-        run: npm run test:browser
+      - name: Check WebKit startup and native boot when available
+        shell: bash
+        run: |
+          if [[ -f native/core-release.json ]]; then
+            export EXPECT_CORE_READY=1
+          fi
+          npm run test:browser
         env:
           SMOKE_BROWSER: webkit
       - uses: actions/configure-pages@v5

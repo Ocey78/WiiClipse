@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "tag": "core-d27e1c8f3860-37424761412",
+  "hostCommit": "d27e1c8f3860815e28f7acaf9c7fa123fa90d6d9",
+  "dolphinCommit": "f8603f14e7f5a090e6693857d625a55ea9330534",
+  "emscripten": "4.0.23",
+  "runId": "37424761412",
+  "source": {
+    "name": "dolphin-browser-source.tar.gz",
+    "sha256": "71e14f337d286bb1b81f9d903f35a4958fa80ff2cc9b1c9b310219ea02399235"
+  },
+  "files": [
+    {
+      "name": "dolphin-core.data",
+      "sha256": "ca138fc8df637ed54ce474aa44607c9a2938e1b53834339175a032730918dbbb"
+    },
+    {
+      "name": "dolphin-core.js",
+      "sha256": "52383e7cf49c442a1d0b53306b4c4eca15b8a5045b7842af6cdfafce81252b31"
+    },
+    {
+      "name": "dolphin-core.wasm",
+      "sha256": "0249284bb26466573325cfe8ce4ae91ac1cedf5df7aeb51e4f9fbcae5b2e1d10"
+    }
+  ]
+}

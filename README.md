@@ -2,7 +2,7 @@
 
 **WiiClipse site:** https://ocey78.github.io/WiiClipse/
 
-The browser app is published automatically after its tests and browser startup checks pass. The native Dolphin core is experimental and is not included in the site yet; opening the site is not a claim that GameCube games can boot.
+The experimental Dolphin WebAssembly core has compiled and booted original GameCube DOL and Wii WAD test programs in Chromium. The browser app is published automatically after its checks pass; native deployment uses a verified release selected by a committed checksum manifest.
 
 Dolphin Web is a **client-side** GameCube/Wii browser port project targeting Safari on iOS/iPadOS 18+. It uses a PWA frontend, a dedicated Web Worker, Emscripten/WebAssembly, WebGL2 for presentation, WebAudio, browser-local saves, touch controls, and the Gamepad API. There is no remote Dolphin server and no game streaming.
 
@@ -18,19 +18,20 @@ The native browser host forces compatibility-first settings for a normal Safari 
 
 ```bash
 npm test
+node scripts/fetch-core.mjs
 npm run build
 npm start
 ```
 
 On Windows you can run `build-ios-web.bat` and `run-local.bat`. For the native core, `build-core-wsl.bat` bootstraps Emscripten in WSL and runs the pinned Dolphin build automatically.
 
-For the browser smoke check, run `npm ci`, `npx playwright install chromium`, then `npm run verify && npm run test:browser`. It serves the built app below `/WiiClipse/` without server isolation headers and checks first-visit startup, shared-memory availability, file selection, reload, and the offline app shell. It does not simulate a successful native game boot.
+For the browser smoke check, run `npm ci`, `npx playwright install chromium`, then `npm run verify && npm run test:browser`. It serves the built app below `/WiiClipse/` without server isolation headers and checks startup, shared-memory availability, file selection, reload, and the offline app shell. With a compiled core installed, `EXPECT_CORE_READY=1 npm run test:browser` also boots the original DOL and WAD probes and checks their actual video output.
 
 ## GitHub Pages
 
 `.github/workflows/pages.yml` tests and deploys `dist/` whenever `main` changes. The repository's Pages source is **GitHub Actions**. Relative asset paths support the `/WiiClipse/` project URL.
 
-When `native/core-release.json` selects a verified native release, deployments download its exact core files and check their SHA-256 hashes before building. The Chromium check then boots the original four-color DOL probe. A failed download or boot check stops deployment. The native workflow publishes versioned core files and their corresponding source only after that boot check passes; selecting a release is a separate committed change.
+When `native/core-release.json` selects a verified native release, deployments download its exact core files and check their SHA-256 hashes before building. The Chromium check then boots the original DOL and WAD probes. A failed download or boot check stops deployment. The native workflow publishes versioned core files and their corresponding source only after both probes pass; selecting a release is a separate committed change.
 
 The service worker adds the isolation headers required for shared memory on this static host. The first visit may reload once before the app starts. Offline caching covers the app shell; it does not cache game files or the native core. Games remain on your device.
 
@@ -55,4 +56,6 @@ Add the HTTPS deployment to the iPhone Home Screen for the PWA-style experience.
 
 ## Current verification boundary
 
-The JavaScript worker/frontend, source-level native ABI checks, static PWA build, and real Chromium startup checks are tested. A compiled `dolphin-core.wasm` is not included, and actual GameCube boot or iOS/Safari emulation has not been verified. The manual **Build experimental Dolphin core** workflow attempts the native compilation separately and preserves its build logs. See `native/README.md` for the remaining porting gaps; compiling the core alone does not establish that it can boot a game.
+[Native build 37424761412](https://github.com/Ocey78/WiiClipse/actions/runs/37424761412), from frontend commit `d27e1c8`, compiled the core and executed both original probes in Chromium. Each produced the expected 640 × 240 frame: red/green/blue/white for GameCube and the reverse order for the Wii WAD. The versioned core and corresponding source use release tag [`core-d27e1c8f3860-37424761412`](https://github.com/Ocey78/WiiClipse/releases/tag/core-d27e1c8f3860-37424761412).
+
+This verifies interpreter execution, video output, and installation/launch of the synthetic WAD. Commercial games, broader WAD compatibility, audio, controller behavior, and emulation on an actual iPhone/iPad remain unverified. The Cached Interpreter and Software Renderer can be slow. See [`native/README.md`](native/README.md) for build and deployment details.

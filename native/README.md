@@ -1,8 +1,8 @@
 # Dolphin Web native core
 
-This directory contains an experimental Emscripten build and browser host for the maintained `libretro/dolphin` frontend. It has not yet produced a verified browser emulator core. A successful web build or frontend test run does not establish that GameCube or Wii software can boot.
+This directory contains an experimental Emscripten build and browser host for the maintained `libretro/dolphin` frontend. The compiled core has booted original GameCube DOL and Wii WAD test programs and produced their expected video in Chromium. Broader game and device compatibility remains experimental.
 
-The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The patches have been checked against that exact commit. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These settings are intended for a browser port; they are not proof of iOS or game compatibility.
+The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These browser-compatible settings can be slow; actual iOS device performance is unverified.
 
 ## Prerequisites
 
@@ -70,12 +70,14 @@ When the manifest is absent, the downloader explicitly skips release acquisition
 
 ## Current milestone
 
-The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and browser patches are implemented. The software renderer presents pixels without a desktop OpenGL window. Game loading checks native startup and returns an error if initialization fails; stopping a game resets the native startup state for another load. Host-compiled tests exercise frame conversion and the browser-host boot contract. These tests do not execute the emulator.
+[Native build 37424761412](https://github.com/Ocey78/WiiClipse/actions/runs/37424761412), from frontend commit `d27e1c8`, passed compilation, host tests, frontend checks, and actual-core Chromium boot checks. The original GameCube DOL and synthetic Wii WAD each emitted the expected 640 × 240 frame with distinct stripe orders. This verifies real interpreter execution and video presentation, plus the WAD's temporary NAND installation and title launch.
+
+The build's core and corresponding source use release tag [`core-d27e1c8f3860-37424761412`](https://github.com/Ocey78/WiiClipse/releases/tag/core-d27e1c8f3860-37424761412). Pages acquires the release chosen by `native/core-release.json`; publishing a core release alone does not change the live site.
 
 The **Build experimental Dolphin core** GitHub Actions workflow can be run manually. It pins Emscripten 4.0.23 and retains compiler and browser logs. A successful compile saves `dolphin-browser-core-unverified` for diagnostics; this artifact must not be deployed without passing the browser check. The separate `dolphin-browser-core` artifact requires compilation, host tests, frontend verification, and browser boot checks to succeed. The browser check requires the compiled module to initialize and render distinct expected pixels from original GameCube DOL and Wii WAD programs in `native/tests/`. The workflow then publishes the verified core and its corresponding source as a versioned prerelease. Selecting its manifest for Pages deployment remains a separate committed change.
 
-The pinned Emscripten runtime supplies `/dev/shm` through MEMFS. With fastmem disabled, the Cached Interpreter uses nonoverlapping physical-memory views and direct RAM pointers; wasm32 also skips the 64-bit JIT memory arena. These source checks do not establish a memory-port blocker. Real boot and memory-use tests are still needed.
+The pinned Emscripten runtime supplies `/dev/shm` through MEMFS. With fastmem disabled, the Cached Interpreter uses nonoverlapping physical-memory views and direct RAM pointers; wasm32 also skips the 64-bit JIT memory arena. Both probes booted with this configuration; larger titles still need memory-use testing.
 
-The pinned upstream libretro core accepts Wii `.wad` packages. Its WAD boot path installs the package into the emulated NAND and launches its title. The browser's persistent save mount includes that NAND under `/dolphin/save/User/Wii`. Invalid packages and packages without a bootable title can fail to load. This source-level support does not establish browser compatibility for an individual Wii title.
+The WAD boot path installs the package into the emulated NAND and launches its title. The browser's persistent save mount includes that NAND under `/dolphin/save/User/Wii`. Invalid packages and packages without a bootable title can fail to load. The synthetic probe establishes this path works in Chromium; individual Wii titles still require testing.
 
-Completion still requires a successful native build and browser boot run. Broader compatibility also needs suitable homebrew or user-provided games covering audio, input, Wii WAD loading, and stop/restart. No compiled core or game-boot result is claimed yet.
+Commercial game compatibility, broader homebrew/WAD coverage, audio, controller behavior, stop/restart, save persistence, and emulation on an actual iPhone/iPad remain unverified. The probes contain no commercial games or firmware and do not establish those capabilities.
