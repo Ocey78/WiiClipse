@@ -1,0 +1,42 @@
+--- a/Source/Core/Core/IOS/Network/Socket.h
++++ b/Source/Core/Core/IOS/Network/Socket.h
+@@ -15,7 +15,7 @@
+ #define FREE(x) HeapFree(GetProcessHeap(), 0, (x))
+ 
+ #elif defined(__linux__) or defined(__APPLE__) or defined(__FreeBSD__) or defined(__NetBSD__) or   \
+-    defined(__OpenBSD__) or defined(__HAIKU__)
++    defined(__OpenBSD__) or defined(__HAIKU__) or defined(__EMSCRIPTEN__)
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <net/if.h>
+--- a/Source/Core/Core/HW/DVD/AMMediaboard.cpp
++++ b/Source/Core/Core/HW/DVD/AMMediaboard.cpp
+@@ -33,7 +33,7 @@
+ #include "VideoCommon/OnScreenDisplay.h"
+ 
+ #if defined(__linux__) or defined(__APPLE__) or defined(__FreeBSD__) or defined(__NetBSD__) or     \
+-    defined(__HAIKU__)
++    defined(__HAIKU__) or defined(__EMSCRIPTEN__)
+ 
+ #include <unistd.h>
+ 
+--- a/Source/Core/Core/HW/EXI/EXI_DeviceEthernet.h
++++ b/Source/Core/Core/HW/EXI/EXI_DeviceEthernet.h
+@@ -412,7 +412,7 @@
+     bool m_bba_link_up = false;
+     bool m_bba_failure_notified = false;
+ #if defined(WIN32) || defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) ||          \
+-    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__HAIKU__)
++    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__HAIKU__) || defined(__EMSCRIPTEN__)
+     sf::UdpSocket m_sf_socket;
+     sf::IpAddress m_sf_recipient_ip = sf::IpAddress::Any;
+     char m_in_frame[9004]{};
+@@ -456,7 +456,7 @@
+     std::map<u32, Common::MACAddress> m_arp_table;
+     sf::TcpListener m_upnp_httpd;
+ #if defined(WIN32) || defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) ||          \
+-    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__HAIKU__)
++    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__HAIKU__) || defined(__EMSCRIPTEN__)
+     NetworkRef m_network_ref;
+     std::thread m_read_thread;
+     Common::Flag m_read_enabled;
