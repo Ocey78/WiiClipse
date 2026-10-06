@@ -20,7 +20,7 @@
  if(ENABLE_VULKAN)
    target_sources(dolphin_libretro PRIVATE
      Vulkan.cpp
-@@ -27,6 +33,41 @@
+@@ -27,6 +33,43 @@
  set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
  
  set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
@@ -52,6 +52,8 @@
 +    "-sFORCE_FILESYSTEM=1"
 +    "-sUSE_WEBGL2=1"
 +    "-sFULL_ES3=1"
++    "-sGL_ENABLE_GET_PROC_ADDRESS=1"
++    "-sOFFSCREENCANVAS_SUPPORT=1"
 +    "-sEXPORTED_RUNTIME_METHODS=['FS','cwrap','IDBFS','WORKERFS']"
 +    "-lworkerfs.js"
 +    "-lidbfs.js"

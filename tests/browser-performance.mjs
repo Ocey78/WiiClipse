@@ -5,11 +5,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBootProbe, createComputeProbe } from '../native/tests/boot-probe.mjs';
 import { createWadBootProbe } from '../native/tests/wad-boot-probe.mjs';
+import { createGxBootProbe } from '../native/tests/gx-boot-probe.mjs';
 
 const root = path.resolve(process.env.PERF_DIST || 'dist');
 const coreRoot = process.env.PERF_CORE_DIR ? path.resolve(process.env.PERF_CORE_DIR) : path.join(root, 'core');
 const frames = Number(process.env.PERF_FRAMES || 120);
 assert.ok(Number.isInteger(frames) && frames >= 10 && frames <= 2000);
+const renderer = process.env.PERF_RENDERER;
+assert.ok(renderer === undefined || ['software', 'hardware'].includes(renderer), 'PERF_RENDERER must be software or hardware');
+const gxLayers = Number(process.env.PERF_GX_LAYERS || 8);
 const playwright = await import(process.env.PLAYWRIGHT_MODULE ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
 const browserName = process.env.SMOKE_BROWSER || 'chromium';
 const server = http.createServer(async (request, response) => {
@@ -33,22 +37,26 @@ try {
   browser = await playwright[browserName].launch({ headless: true,
     ...(browserName === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
   });
-  for (const [name, probe] of [['idle', createBootProbe()], ['compute', createComputeProbe()], ['wad', createWadBootProbe()]]) {
+  for (const [name, probe] of [['idle', createBootProbe()], ['compute', createComputeProbe()], ['wad', createWadBootProbe()],
+    ['gx', createGxBootProbe({ layers: gxLayers })]]) {
     if (process.env.PERF_CASE && process.env.PERF_CASE !== name) continue;
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}/benchmark.html`);
-    const result = await page.evaluate(async ({ name, bytes, samples, frames }) => {
+    const result = await page.evaluate(async ({ name, bytes, samples, alternateSamples, frames, renderer }) => {
       const worker = new Worker('./src/dolphin-worker.js', { type: 'module' });
       let pending;
       const counters = { videoMessages: 0, videoBytes: 0, audioMessages: 0, audioFrames: 0 };
       let matched = false;
+      let alternateMatched = false;
+      let paletteTransitions = 0;
+      let previousPalette;
       let lastFrame;
       worker.addEventListener('message', ({ data }) => {
         if (data.type === 'video') {
           counters.videoMessages++;
           counters.videoBytes += data.buffer.byteLength;
-          if (!matched) {
+          if (!matched || alternateSamples) {
             const pixels = new Uint8Array(data.buffer);
             const rgba = data.pixelFormat === 'RGBA8888';
             const colors = samples.map(({ x, y }) => {
@@ -56,7 +64,17 @@ try {
               return [pixels[i + (rgba ? 0 : 2)], pixels[i + 1], pixels[i + (rgba ? 2 : 0)]];
             });
             lastFrame = { width: data.width, height: data.height, colors };
-            matched = samples.every((sample, index) => ['r', 'g', 'b'].every((c, i) => Math.abs(colors[index][i] - sample[c]) <= 35));
+            const matches = expected => expected.every((sample, index) => sample.x < data.width && sample.y < data.height &&
+              ['r', 'g', 'b'].every((c, i) => Math.abs(colors[index][i] - sample[c]) <= 35));
+            const primary = matches(samples);
+            const alternate = alternateSamples && matches(alternateSamples);
+            matched ||= primary;
+            alternateMatched ||= alternate;
+            const palette = primary ? 0 : alternate ? 1 : undefined;
+            if (palette !== undefined) {
+              if (previousPalette !== undefined && previousPalette !== palette) paletteTransitions++;
+              previousPalette = palette;
+            }
           }
         }
         if (data.type === 'audio') { counters.audioMessages++; counters.audioFrames += data.frames; }
@@ -71,14 +89,16 @@ try {
       });
       try {
         const start = performance.now();
-        await send({ type: 'init' }, 'ready');
+        await send({ type: 'init', renderer }, 'ready');
         const initMs = performance.now() - start;
         const bootStart = performance.now();
         await send({ type: 'boot', file: new File([new Uint8Array(bytes)], name) }, 'booted');
         const bootMs = performance.now() - bootStart;
         for (let i = 0; i < 12; i++) await send({ type: 'frame' }, 'frame-done');
         if (!matched) throw new Error(`Original probe did not render: ${JSON.stringify(lastFrame)}`);
+        if (alternateSamples && !alternateMatched) throw new Error(`GX probe did not render both palettes: ${JSON.stringify(lastFrame)}`);
         for (const key of Object.keys(counters)) counters[key] = 0;
+        paletteTransitions = 0;
         const durations = [];
         const runStart = performance.now();
         for (let i = 0; i < frames; i++) {
@@ -87,17 +107,18 @@ try {
           durations.push(performance.now() - frameStart);
         }
         const elapsedMs = performance.now() - runStart;
+        if (alternateSamples && paletteTransitions < 2) throw new Error(`GX draws stopped changing: ${paletteTransitions} palette transitions in ${frames} frames`);
         durations.sort((a, b) => a - b);
         return { initMs, bootMs, frames, elapsedMs, uncappedFps: frames * 1000 / elapsedMs,
           medianFrameMs: durations[Math.floor(frames * 0.5)], p95FrameMs: durations[Math.floor(frames * 0.95)],
-          ...counters, matched, lastFrame };
+          ...counters, matched, lastFrame, ...(alternateSamples ? { alternateMatched, paletteTransitions } : {}) };
       } finally { worker.terminate(); }
-    }, { name: probe.fileName, bytes: [...probe.bytes], samples: probe.samples, frames });
-    results.push({ scenario: name, ...result });
+    }, { name: probe.fileName, bytes: [...probe.bytes], samples: probe.samples, alternateSamples: probe.alternateSamples, frames, renderer });
+    results.push({ scenario: name, ...(probe.trianglesPerFrame ? { trianglesPerFrame: probe.trianglesPerFrame } : {}), ...result });
     console.log(JSON.stringify(results.at(-1)));
     await context.close();
   }
-  const report = { browser: browserName, root, coreRoot, frames, measuredAt: new Date().toISOString(),
+  const report = { browser: browserName, root, coreRoot, frames, requestedRenderer: renderer || 'default', measuredAt: new Date().toISOString(),
     scope: 'Uncapped real Dolphin worker execution and message delivery; excludes WebGL/audio playback and display pacing. Original probes do not establish commercial-game speed.', results };
   if (process.env.PERF_OUT) await fs.writeFile(process.env.PERF_OUT, JSON.stringify(report, null, 2) + '\n');
 } finally {

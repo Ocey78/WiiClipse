@@ -1,0 +1,396 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+@@ -7,6 +7,9 @@
+ 
+ #include "Common/CommonTypes.h"
+ #include "Common/RangeSizeSet.h"
++#ifdef __EMSCRIPTEN__
++#include "Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h"
++#endif
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h"
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
+ #include "Core/PowerPC/JitCommon/JitBase.h"
+@@ -62,6 +65,16 @@
+ 
+   bool HandleFunctionHooking(u32 address);
+   void WriteEndBlock();
++
++#ifdef __EMSCRIPTEN__
++  bool AppendBrowserIntegerOp(u32 word, u32 pc);
++  void FlushBrowserIntegerOps();
++  static s32 RunBrowserIntegerOps(PowerPC::PowerPCState& ppc_state,
++                                  const BrowserInteger::Header& operands);
++  static s32 RunBrowserIntegerOps(std::ostream& stream,
++                                  const BrowserInteger::Header& operands);
++  BrowserInteger::Batch m_browser_integer_batch{};
++#endif
+ 
+   // Finds a free memory region and sets the code emitter to point at that region.
+   // Returns false if no free memory region can be found.
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -66,6 +66,14 @@
+   {
+     const auto callback = *reinterpret_cast<const AnyCallback*>(normal_entry);
+     const u8* payload = normal_entry + sizeof(callback);
++#ifdef __EMSCRIPTEN__
++    if (callback == AnyCallbackCast(RunBrowserIntegerOps))
++    {
++      normal_entry += RunBrowserIntegerOps(
++          ppc_state, *reinterpret_cast<const BrowserInteger::Header*>(payload));
++      continue;
++    }
++#endif
+     // Direct dispatch to the most commonly used callbacks for better performance
+     if (callback == AnyCallbackCast(Interpret<false>)) [[likely]]
+     {
+@@ -220,6 +228,46 @@
+   return sizeof(AnyCallback) + sizeof(operands);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++s32 CachedInterpreter::RunBrowserIntegerOps(PowerPC::PowerPCState& ppc_state,
++                                           const BrowserInteger::Header& operands)
++{
++  const auto* ops = reinterpret_cast<const BrowserInteger::Op*>(
++      reinterpret_cast<const u8*>(&operands) + sizeof(operands));
++  BrowserInteger::Execute(ppc_state.gpr, ops, operands.count);
++  return sizeof(AnyCallback) + BrowserInteger::PayloadSize(operands.count);
++}
++
++bool CachedInterpreter::AppendBrowserIntegerOp(u32 word, u32 pc)
++{
++  BrowserInteger::Op op;
++  if (!BrowserInteger::Decode(word, op))
++    return false;
++  auto& batch = m_browser_integer_batch;
++  // A skipped/reordered analyzer op must not make the disassembler invent a PC.
++  if (batch.header.count == batch.ops.size() ||
++      (batch.header.count != 0 && pc != batch.header.first_pc + 4 * batch.header.count))
++    FlushBrowserIntegerOps();
++  if (batch.header.count == 0)
++    batch.header.first_pc = pc;
++  batch.ops[batch.header.count++] = op;
++  return true;
++}
++
++void CachedInterpreter::FlushBrowserIntegerOps()
++{
++  auto& batch = m_browser_integer_batch;
++  if (batch.header.count == 0)
++    return;
++  static_assert(alignof(BrowserInteger::Batch) <= alignof(AnyCallback));
++  static_assert(sizeof(BrowserInteger::Header) % alignof(AnyCallback) == 0);
++  static_assert(sizeof(BrowserInteger::Op) % alignof(AnyCallback) == 0);
++  Write(AnyCallbackCast(RunBrowserIntegerOps), &batch,
++        BrowserInteger::PayloadSize(batch.header.count));
++  batch.header.count = 0;
++}
++#endif
++
+ bool CachedInterpreter::HandleFunctionHooking(u32 address)
+ {
+   // CachedInterpreter inherits from JitBase and is considered a JIT by relevant code.
+@@ -228,6 +276,9 @@
+   if (!result)
+     return false;
+ 
++#ifdef __EMSCRIPTEN__
++  FlushBrowserIntegerOps();
++#endif
+   Write(HLEFunction, {m_system, address, result.hook_index});
+ 
+   if (result.type != HLE::HookType::Replace)
+@@ -240,6 +291,9 @@
+ 
+ void CachedInterpreter::WriteEndBlock()
+ {
++#ifdef __EMSCRIPTEN__
++  FlushBrowserIntegerOps();
++#endif
+   if (IsProfilingEnabled())
+   {
+     Write(EndBlock<true>, {{js.downcountAmount, js.numLoadStoreInst, js.numFloatingPointInst},
+@@ -348,6 +402,9 @@
+   js.numLoadStoreInst = 0;
+   js.numFloatingPointInst = 0;
+   js.curBlock = b;
++#ifdef __EMSCRIPTEN__
++  m_browser_integer_batch.header.count = 0;
++#endif
+ 
+   auto& interpreter = m_system.GetInterpreter();
+   auto& power_pc = m_system.GetPowerPC();
+@@ -375,6 +432,15 @@
+ 
+     if (!op.skip)
+     {
++#ifdef __EMSCRIPTEN__
++      // Keep debugger/stepping and all potential exits on the original path.
++      // Cycle/performance counters above are still updated for every guest op.
++      if (!IsDebuggingEnabled() && !cpu.IsStepping() && !op.canEndBlock &&
++          !op.branchIsIdleLoop && AppendBrowserIntegerOp(op.inst.hex, op.address))
++        continue;
++      // Flush before any callback that observes state, raises exceptions, or exits.
++      FlushBrowserIntegerOps();
++#endif
+       if (IsDebuggingEnabled() && !cpu.IsStepping() &&
+           breakpoints.IsAddressBreakPoint(js.compilerPC))
+       {
+@@ -412,6 +478,9 @@
+         WriteEndBlock();
+     }
+   }
++#ifdef __EMSCRIPTEN__
++  FlushBrowserIntegerOps();
++#endif
+   if (code_block.m_broken)
+   {
+     Write(WriteBrokenBlockNPC, {nextPC});
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h
+@@ -90,9 +90,11 @@
+   static s32 PoisonCallback(PowerPC::PowerPCState& ppc_state, const void* operands);
+   static s32 PoisonCallback(std::ostream& stream, const void* operands);
+ 
+-private:
++protected:
++  // Variable-sized payloads must preserve callback alignment between records.
+   void Write(AnyCallback callback, const void* operands, std::size_t size);
+ 
++private:
+   // Pointer to memory where code will be emitted to.
+   u8* m_code = nullptr;
+   // Pointer past the end of the memory region we're allowed to emit to.
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+@@ -89,6 +89,29 @@
+   return sizeof(AnyCallback) + sizeof(operands);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++s32 CachedInterpreter::RunBrowserIntegerOps(std::ostream& stream,
++                                           const BrowserInteger::Header& operands)
++{
++  static constexpr const char* names[] = {
++      "load-immediate", "add-immediate", "multiply-immediate", "or-immediate", "xor-immediate",
++      "rotate-mask", "rotate-insert", "rotate-register-mask", "add", "subtract", "multiply",
++      "negate", "and", "and-complement", "or", "or-complement", "xor", "nand", "nor",
++      "equivalent", "shift-left", "shift-right", "count-leading-zeros", "extend-byte", "extend-half"};
++  const auto* ops = reinterpret_cast<const BrowserInteger::Op*>(
++      reinterpret_cast<const u8*>(&operands) + sizeof(operands));
++  for (u32 i = 0; i < operands.count; ++i)
++  {
++    const auto& op = ops[i];
++    fmt::println(stream,
++                 "DecodedInteger(pc=0x{:08x}, op={}, dst=r{}, a=r{}, b={}, value=0x{:08x})",
++                 operands.first_pc + i * 4, names[static_cast<u8>(op.kind)], op.dst, op.a,
++                 op.b, op.value);
++  }
++  return sizeof(AnyCallback) + BrowserInteger::PayloadSize(operands.count);
++}
++#endif
++
+ static std::once_flag s_sorted_lookup_flag;
+ 
+ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& stream)
+@@ -114,6 +137,9 @@
+       LOOKUP_KV(CachedInterpreter::CheckFPU),
+       LOOKUP_KV(CachedInterpreter::CheckBreakpoint),
+       LOOKUP_KV(CachedInterpreter::CheckIdle),
++#ifdef __EMSCRIPTEN__
++      LOOKUP_KV(CachedInterpreter::RunBrowserIntegerOps),
++#endif
+   });
+ 
+ #undef LOOKUP_KV
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h
+@@ -0,0 +1,181 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++#include <bit>
++#include <cstddef>
++
++#include "Common/CommonTypes.h"
++
++// Browser-only decoded integer runs. Only instructions whose entire effect is
++// one GPR write belong here. Rc/OE/carry, memory, traps, branches and FPU work
++// retain the normal interpreter path and its exception/debugger boundaries.
++namespace BrowserInteger
++{
++enum class Kind : u8
++{
++  LoadImmediate, AddImmediate, MultiplyImmediate, OrImmediate, XorImmediate,
++  RotateMask, RotateInsert, RotateRegisterMask,
++  Add, Subtract, Multiply, Negate,
++  And, AndComplement, Or, OrComplement, Xor, Nand, Nor, Equivalent,
++  ShiftLeft, ShiftRight, CountLeadingZeros, ExtendByte, ExtendHalf,
++};
++
++struct Op
++{
++  u32 value;
++  Kind kind;
++  u8 dst;
++  u8 a;
++  u8 b;
++};
++static_assert(sizeof(Op) == 8);
++
++struct Header
++{
++  u32 count = 0;
++  u32 first_pc = 0;
++};
++
++struct Batch
++{
++  Header header;
++  std::array<Op, 32> ops;
++};
++static_assert(offsetof(Batch, ops) == sizeof(Header));
++
++constexpr std::size_t PayloadSize(u32 count)
++{
++  return sizeof(Header) + count * sizeof(Op);
++}
++
++inline bool Decode(u32 word, Op& op)
++{
++  const u8 rd = (word >> 21) & 31;
++  const u8 ra = (word >> 16) & 31;
++  const u8 rb = (word >> 11) & 31;
++  const u32 primary = word >> 26;
++  const u32 immediate = word & 0xffff;
++  const u32 signed_immediate = immediate | ((immediate & 0x8000) ? 0xffff0000 : 0);
++  op = {0, Kind::LoadImmediate, rd, ra, rb};
++  switch (primary)
++  {
++  case 7:
++    op.kind = Kind::MultiplyImmediate;
++    op.value = signed_immediate;
++    return true;
++  case 14:
++  case 15:
++    op.kind = ra == 0 ? Kind::LoadImmediate : Kind::AddImmediate;
++    op.value = primary == 15 ? immediate << 16 : signed_immediate;
++    return true;
++  case 24:
++  case 25:
++  case 26:
++  case 27:
++    op.kind = primary < 26 ? Kind::OrImmediate : Kind::XorImmediate;
++    op.dst = ra;
++    op.a = rd;
++    op.value = (primary & 1) ? immediate << 16 : immediate;
++    return true;
++  case 20:
++  case 21:
++  case 23:
++  {
++    if (word & 1)  // Rc updates CR0.
++      return false;
++    const u32 mb = (word >> 6) & 31;
++    const u32 me = (word >> 1) & 31;
++    const u32 mask = (0xffffffffu >> mb) ^ (0x7fffffffu >> me);
++    op.kind = primary == 20 ? Kind::RotateInsert :
++              primary == 21 ? Kind::RotateMask : Kind::RotateRegisterMask;
++    op.dst = ra;
++    op.a = rd;
++    op.value = mb > me ? ~mask : mask;
++    return true;
++  }
++  case 31:
++    break;
++  default:
++    return false;
++  }
++
++  if (word & 1)
++    return false;
++  // Use the entire ten-bit subopcode: accepting just nine bits would silently
++  // accept OE forms and confuse other opcodes (e.g. srw's bit 10 is not OE).
++  const u32 subop = (word >> 1) & 1023;
++  switch (subop)
++  {
++  case 266: op.kind = Kind::Add; return true;
++  case 40: op.kind = Kind::Subtract; return true;
++  case 235: op.kind = Kind::Multiply; return true;
++  case 104: op.kind = Kind::Negate; return true;
++  default: break;
++  }
++  op.dst = ra;
++  op.a = rd;
++  switch (subop)
++  {
++  case 28: op.kind = Kind::And; return true;
++  case 60: op.kind = Kind::AndComplement; return true;
++  case 444: op.kind = Kind::Or; return true;
++  case 412: op.kind = Kind::OrComplement; return true;
++  case 316: op.kind = Kind::Xor; return true;
++  case 476: op.kind = Kind::Nand; return true;
++  case 124: op.kind = Kind::Nor; return true;
++  case 284: op.kind = Kind::Equivalent; return true;
++  case 24: op.kind = Kind::ShiftLeft; return true;
++  case 536: op.kind = Kind::ShiftRight; return true;
++  case 26: op.kind = Kind::CountLeadingZeros; return true;
++  case 954: op.kind = Kind::ExtendByte; return true;
++  case 922: op.kind = Kind::ExtendHalf; return true;
++  default: return false;
++  }
++}
++
++inline void Execute(u32* gpr, const Op* ops, std::size_t count)
++{
++  for (std::size_t i = 0; i < count; ++i)
++  {
++    const auto& op = ops[i];
++    // All inputs must be read before writing: destination and sources may alias.
++    const u32 a = gpr[op.a];
++    const u32 b = gpr[op.b];
++    u32 result;
++    switch (op.kind)
++    {
++    case Kind::LoadImmediate: result = op.value; break;
++    case Kind::AddImmediate: result = a + op.value; break;
++    case Kind::MultiplyImmediate: result = a * op.value; break;
++    case Kind::OrImmediate: result = a | op.value; break;
++    case Kind::XorImmediate: result = a ^ op.value; break;
++    case Kind::RotateMask: result = std::rotl(a, op.b) & op.value; break;
++    case Kind::RotateInsert:
++      result = (gpr[op.dst] & ~op.value) | (std::rotl(a, op.b) & op.value);
++      break;
++    case Kind::RotateRegisterMask: result = std::rotl(a, b & 31) & op.value; break;
++    case Kind::Add: result = a + b; break;
++    case Kind::Subtract: result = b - a; break;
++    case Kind::Multiply: result = a * b; break;
++    case Kind::Negate: result = 0u - a; break;
++    case Kind::And: result = a & b; break;
++    case Kind::AndComplement: result = a & ~b; break;
++    case Kind::Or: result = a | b; break;
++    case Kind::OrComplement: result = a | ~b; break;
++    case Kind::Xor: result = a ^ b; break;
++    case Kind::Nand: result = ~(a & b); break;
++    case Kind::Nor: result = ~(a | b); break;
++    case Kind::Equivalent: result = ~(a ^ b); break;
++    case Kind::ShiftLeft: result = (b & 32) ? 0 : a << (b & 31); break;
++    case Kind::ShiftRight: result = (b & 32) ? 0 : a >> (b & 31); break;
++    case Kind::CountLeadingZeros: result = std::countl_zero(a); break;
++    case Kind::ExtendByte: result = (a & 0xff) | ((a & 0x80) ? 0xffffff00 : 0); break;
++    case Kind::ExtendHalf: result = (a & 0xffff) | ((a & 0x8000) ? 0xffff0000 : 0); break;
++    }
++    gpr[op.dst] = result;
++  }
++}
++}  // namespace BrowserInteger

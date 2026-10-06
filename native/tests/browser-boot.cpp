@@ -25,6 +25,7 @@ void WebPostStatus(const char*) {}
 void WebPostLog(int, const char* text) { logs.emplace_back(text); }
 void WebPostVideo(const void*, unsigned, unsigned, size_t) {}
 void WebPostRGBA(const void*, unsigned, unsigned, size_t) {}
+void WebPostHardwareVideo(unsigned, unsigned) {}
 size_t WebPostAudio(const int16_t* samples, size_t count, unsigned rate)
 {
   audio_frames.push_back(count);

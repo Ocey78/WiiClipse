@@ -66,6 +66,9 @@ jobs:
           "$RUNNER_TEMP/software-frame-test"
           c++ -std=c++17 -pthread -I native/.build/dolphin/Externals/libretro-common/include -I native/tests/stubs native/tests/browser-boot.cpp -o "$RUNNER_TEMP/browser-boot-test"
           "$RUNNER_TEMP/browser-boot-test"
+          python3 native/tests/extract-integer-reference.py native/.build/dolphin "$RUNNER_TEMP/integer-reference.h"
+          c++ -std=c++20 -O2 -I native/.build/dolphin/Source/Core -I "$RUNNER_TEMP" native/tests/browser-integer.cpp -o "$RUNNER_TEMP/browser-integer"
+          "$RUNNER_TEMP/browser-integer"
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -74,20 +77,40 @@ jobs:
       - name: Verify native browser media boundary
         run: node --test native/tests/browser-media.test.mjs
       - run: npm run verify
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium firefox
       - name: Verify browser frame scheduling
         run: node tests/scheduler-browser.mjs
       - name: Verify browser renderer pixels and resizing
         run: node tests/renderer-browser.mjs
+      - name: Verify browser GPU staging transfers
+        run: node native/tests/webgl2-staging-browser.mjs
       - name: Boot original GameCube DOL and Wii WAD in Chromium
         env:
           EXPECT_CORE_READY: '1'
+          SMOKE_EXPECT_GPU: '1'
         run: |
           set -o pipefail
           npm run test:browser 2>&1 | tee native-browser-smoke.log
+      - name: Verify native software fallback when worker GPU is unavailable
+        env:
+          EXPECT_CORE_READY: '1'
+          SMOKE_DISABLE_WORKER_GPU: '1'
+        run: npm run test:browser
       - name: Verify browser audio streaming
         run: node tests/browser-audio.mjs
+      - name: Boot original DOL and WAD in Firefox
+        env:
+          EXPECT_CORE_READY: '1'
+          SMOKE_BROWSER: firefox
+        run: npm run test:browser
+      - name: Verify original GX depth blending and sustained draws
+        run: |
+          mkdir -p native-performance
+          PERF_CASE=gx PERF_RENDERER=software PERF_FRAMES=30 PERF_OUT=native-performance/gx-software.json node tests/browser-performance.mjs
+          PERF_CASE=gx PERF_RENDERER=hardware PERF_FRAMES=30 PERF_OUT=native-performance/gx-hardware.json node tests/browser-performance.mjs
       - name: Compare compute throughput with pinned release
+        env:
+          PERF_RENDERER: software
         run: node native/tests/compare-core-performance.mjs
       - name: Upload native performance comparison
         if: always()

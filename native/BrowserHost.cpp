@@ -1,5 +1,9 @@
 #include <libretro.h>
 #include <emscripten.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/html5.h>
+#include <emscripten/html5_webgl.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -33,6 +37,116 @@ constexpr size_t kAudioBatchFrames = 2048;
 std::array<int16_t, kAudioBatchFrames * 2> s_audio_samples{};
 size_t s_audio_frames = 0;
 unsigned s_audio_rate = 0;
+retro_hw_render_callback s_hw_render{};
+int s_graphics_context = 0;
+
+#ifdef __EMSCRIPTEN__
+EM_JS(int, WebRegisterGraphicsCanvas, (), {
+  if (Module['dwebRenderer'] === 'software' || typeof OffscreenCanvas === 'undefined') return 0;
+  // Allocate once before backend initialization. Dolphin's native 1x output
+  // occupies the lower-left 640 by 480/528/576 extent of this canvas.
+  specialHTMLTargets['!dolphin'] = new OffscreenCanvas(640, 576);
+  return 1;
+});
+
+EM_JS(void, WebReleaseGraphicsCanvas, (), {
+  delete specialHTMLTargets['!dolphin'];
+});
+#endif
+
+EM_JS(void, WebPostHardwareVideo, (unsigned width, unsigned height), {
+  const gl = GL.currentContext && GL.currentContext.GLctx;
+  if (!gl || !width || !height || width > 640 || height > 576) return;
+  // Dolphin owns GL state: save and restore every binding/pixel-store value
+  // touched by the host's presentation readback.
+  const framebuffer = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+  const packBuffer = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING);
+  const alignment = gl.getParameter(gl.PACK_ALIGNMENT);
+  const rowLength = gl.getParameter(gl.PACK_ROW_LENGTH);
+  const skipRows = gl.getParameter(gl.PACK_SKIP_ROWS);
+  const skipPixels = gl.getParameter(gl.PACK_SKIP_PIXELS);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+  gl.pixelStorei(gl.PACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.PACK_SKIP_ROWS, 0);
+  gl.pixelStorei(gl.PACK_SKIP_PIXELS, 0);
+  const pixels = new Uint8Array(width * height * 4);
+  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, packBuffer);
+  gl.pixelStorei(gl.PACK_ALIGNMENT, alignment);
+  gl.pixelStorei(gl.PACK_ROW_LENGTH, rowLength);
+  gl.pixelStorei(gl.PACK_SKIP_ROWS, skipRows);
+  gl.pixelStorei(gl.PACK_SKIP_PIXELS, skipPixels);
+  const rowBytes = width * 4;
+  const row = new Uint8Array(rowBytes);
+  for (let y = 0; y < (height >> 1); ++y) {
+    const top = y * rowBytes;
+    const bottom = (height - 1 - y) * rowBytes;
+    row.set(pixels.subarray(top, top + rowBytes));
+    pixels.copyWithin(top, bottom, bottom + rowBytes);
+    pixels.set(row, bottom);
+  }
+  self.postMessage({ type: 'video', width, height, pitch: rowBytes,
+    pixelFormat: 'RGBA8888', buffer: pixels.buffer }, [pixels.buffer]);
+});
+
+void DestroyGraphicsContext()
+{
+#ifdef __EMSCRIPTEN__
+  if (s_graphics_context)
+  {
+    if (s_hw_render.context_destroy)
+      s_hw_render.context_destroy();
+    emscripten_webgl_destroy_context(s_graphics_context);
+    WebReleaseGraphicsCanvas();
+  }
+#endif
+  s_graphics_context = 0;
+  s_hw_render = {};
+}
+
+bool SetHardwareRender(retro_hw_render_callback* callback)
+{
+#ifdef __EMSCRIPTEN__
+  if (!callback || s_graphics_context ||
+      (callback->context_type != RETRO_HW_CONTEXT_OPENGLES3 &&
+       !(callback->context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION &&
+         callback->version_major == 3 && callback->version_minor == 0)))
+    return false;
+  if (!WebRegisterGraphicsCanvas())
+    return false;
+  EmscriptenWebGLContextAttributes attributes;
+  emscripten_webgl_init_context_attributes(&attributes);
+  attributes.majorVersion = 2;
+  attributes.minorVersion = 0;
+  attributes.alpha = false;
+  attributes.depth = callback->depth;
+  attributes.stencil = callback->stencil;
+  attributes.antialias = false;
+  attributes.preserveDrawingBuffer = true;
+  attributes.powerPreference = EM_WEBGL_POWER_PREFERENCE_HIGH_PERFORMANCE;
+  attributes.proxyContextToMainThread = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_DISALLOW;
+  s_graphics_context = emscripten_webgl_create_context("!dolphin", &attributes);
+  if (!s_graphics_context ||
+      emscripten_webgl_make_context_current(s_graphics_context) != EMSCRIPTEN_RESULT_SUCCESS ||
+      !emscripten_webgl_enable_extension(s_graphics_context, "EXT_color_buffer_float"))
+  {
+    DestroyGraphicsContext();
+    WebReleaseGraphicsCanvas();
+    return false;
+  }
+  callback->get_current_framebuffer = []() -> uintptr_t { return 0; };
+  callback->get_proc_address = [](const char* name) -> retro_proc_address_t {
+    return reinterpret_cast<retro_proc_address_t>(emscripten_webgl_get_proc_address(name));
+  };
+  s_hw_render = *callback;
+  return true;
+#else
+  return false;
+#endif
+}
 
 EM_JS(void, WebPostStatus, (const char* text), {
   self.postMessage({ type: 'status', message: UTF8ToString(text) });
@@ -148,7 +262,7 @@ const char* GetBrowserOption(const char* key)
   if (std::strcmp(key, "dolphin_dsp_hle") == 0)
     return "enabled";
   if (std::strcmp(key, "dolphin_renderer") == 0)
-    return "Software";
+    return "Hardware";
   if (std::strcmp(key, "dolphin_main_load_game_into_memory") == 0)
     return "disabled";
   if (std::strcmp(key, "dolphin_precision_frame_timing") == 0)
@@ -229,9 +343,10 @@ bool BrowserEnvironment(unsigned command, void* data)
     *static_cast<bool*>(data) = false;
     return true;
   case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
-    *static_cast<retro_hw_context_type*>(data) = RETRO_HW_CONTEXT_NONE;
+    *static_cast<retro_hw_context_type*>(data) = RETRO_HW_CONTEXT_OPENGLES3;
     return true;
   case RETRO_ENVIRONMENT_SET_HW_RENDER:
+    return SetHardwareRender(static_cast<retro_hw_render_callback*>(data));
   case RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT:
     return false;
   case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
@@ -264,8 +379,14 @@ bool BrowserEnvironment(unsigned command, void* data)
 
 void BrowserVideoRefresh(const void* data, unsigned width, unsigned height, size_t pitch)
 {
-  if (!data || data == RETRO_HW_FRAME_BUFFER_VALID)
+  if (!data)
     return;
+  if (data == RETRO_HW_FRAME_BUFFER_VALID)
+  {
+    if (s_graphics_context)
+      WebPostHardwareVideo(width, height);
+    return;
+  }
   WebPostVideo(data, width, height, pitch);
 }
 
@@ -400,6 +521,7 @@ EMSCRIPTEN_KEEPALIVE int dweb_load_game(const char* path)
   {
     retro_unload_game();
     s_game_loaded = false;
+    DestroyGraphicsContext();
   }
 
   retro_game_info game{};
@@ -409,16 +531,20 @@ EMSCRIPTEN_KEEPALIVE int dweb_load_game(const char* path)
   game.meta = nullptr;
   if (!retro_load_game(&game))
   {
+    DestroyGraphicsContext();
     DrainWebMessages();
     return 0;
   }
   // Dolphin creates the controller objects during retro_load_game, not retro_init.
   retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+  if (s_graphics_context && s_hw_render.context_reset)
+    s_hw_render.context_reset();
   // retro_load_game only schedules initialization. Complete it without running
   // a guest frame before acknowledging the browser's boot request.
   if (!dolphin_browser_start_game())
   {
     retro_unload_game();
+    DestroyGraphicsContext();
     DrainWebMessages();
     return 0;
   }
@@ -455,6 +581,7 @@ EMSCRIPTEN_KEEPALIVE void dweb_unload_game()
     retro_unload_game();
     s_game_loaded = false;
   }
+  DestroyGraphicsContext();
   DrainWebMessages();
 }
 

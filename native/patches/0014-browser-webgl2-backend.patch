@@ -1,0 +1,309 @@
+diff --git a/Source/Core/Common/GL/GLExtensions/GLExtensions.cpp b/Source/Core/Common/GL/GLExtensions/GLExtensions.cpp
+index 3a724f3..e8a315a 100644
+--- a/Source/Core/Common/GL/GLExtensions/GLExtensions.cpp
++++ b/Source/Core/Common/GL/GLExtensions/GLExtensions.cpp
+@@ -1461,7 +1461,13 @@ const GLFunc gl_function_array[] = {
+     GL_ES_FUNC_ALWAYS_REQUIRED(glBlendFuncSeparate),
+ 
+     // gl_1_5
++#ifdef __EMSCRIPTEN__
++    // WebGL2 exposes buffer readback, unlike native GLES3. Browser staging
++    // textures use it instead of unsupported read mappings.
++    GL_ES3_FUNC_ALWAYS_REQUIRED(glGetBufferSubData),
++#else
+     GLFUNC_ALWAYS_REQUIRED(glGetBufferSubData),
++#endif
+     GLFUNC_ALWAYS_REQUIRED(glGetQueryObjectiv),
+     GLFUNC_ALWAYS_REQUIRED(glMapBuffer),
+     GL_ES_FUNC_ALWAYS_REQUIRED(glBindBuffer),
+diff --git a/Source/Core/DolphinLibretro/Video.cpp b/Source/Core/DolphinLibretro/Video.cpp
+index bfb05f8..be22d0c 100644
+--- a/Source/Core/DolphinLibretro/Video.cpp
++++ b/Source/Core/DolphinLibretro/Video.cpp
+@@ -145,7 +145,11 @@ void Init()
+ #endif
+   }
+   hw_render.context_type = RETRO_HW_CONTEXT_NONE;
+-  if (renderer == "Software")
++  if (renderer == "Software"
++#ifdef __EMSCRIPTEN__
++      || renderer == "Hardware"
++#endif
++  )
+     Config::SetBase(Config::MAIN_GFX_BACKEND, "Software Renderer");
+   else
+     Config::SetBase(Config::MAIN_GFX_BACKEND, "Null");
+@@ -265,6 +269,11 @@ void ContextReset(void)
+   DEBUG_LOG_FMT(VIDEO, "Video - ContextReset!");
+ 
+   g_context_status.MarkReset();
++#ifdef __EMSCRIPTEN__
++  // The browser's single-core boot initializes video inside Core.cpp. The
++  // frontend callback only announces that its WebGL context is current.
++  return;
++#endif
+ 
+ #ifdef HAS_VULKAN
+   if (hw_render.context_type == RETRO_HW_CONTEXT_VULKAN)
+@@ -551,6 +560,11 @@ void ContextDestroy(void)
+   DEBUG_LOG_FMT(VIDEO, "Video - ContextDestroy!");
+ 
+   g_context_status.MarkDestroyed();
++#ifdef __EMSCRIPTEN__
++  // Browser Boot.cpp shuts down video during retro_unload_game while GL is
++  // still current. Do not tear down those objects a second time here.
++  return;
++#endif
+ 
+ #ifdef HAS_OPENGL
+   if (g_gfx &&
+diff --git a/Source/Core/DolphinLibretro/VideoContexts/GLContextLR.cpp b/Source/Core/DolphinLibretro/VideoContexts/GLContextLR.cpp
+index 1a42fb7..a3b8186 100644
+--- a/Source/Core/DolphinLibretro/VideoContexts/GLContextLR.cpp
++++ b/Source/Core/DolphinLibretro/VideoContexts/GLContextLR.cpp
+@@ -7,6 +7,17 @@
+ #include "DolphinLibretro/VideoContexts/ContextStatus.h"
+ #include "DolphinLibretro/Video.h"
+ 
++#ifdef __EMSCRIPTEN__
++#include <cstddef>
++#include <cstdint>
++
++// Emscripten implements this WebGL2-only entry point, but 4.0.23 omits it
++// from emscripten_webgl_get_proc_address's GLES function table.
++extern "C" void BrowserGetBufferSubData(unsigned target, std::intptr_t offset,
++                                        std::ptrdiff_t size, void* data)
++    __asm__("glGetBufferSubData");
++#endif
++
+ GLContextLR::GLContextLR()
+ {
+ }
+@@ -15,6 +26,10 @@ GLContextLR::~GLContextLR() = default;
+ 
+ void* GLContextLR::GetFuncAddress(const std::string& name)
+ {
++#ifdef __EMSCRIPTEN__
++  if (name == "glGetBufferSubData")
++    return reinterpret_cast<void*>(&BrowserGetBufferSubData);
++#endif
+   return (void*)Libretro::Video::hw_render.get_proc_address(name.c_str());
+ }
+ 
+diff --git a/Source/Core/VideoBackends/OGL/OGLConfig.cpp b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
+index e20bf10..fa706f7 100644
+--- a/Source/Core/VideoBackends/OGL/OGLConfig.cpp
++++ b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
+@@ -553,6 +553,50 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+     glEnable(GL_PROGRAM_POINT_SIZE);
+   }
+ 
++#ifdef __EMSCRIPTEN__
++  // WebGL2 provides the GLES3.0 shader model, not every desktop/GLES extension
++  // advertised through Emscripten's compatibility layer.
++  if (!m_main_gl_context->IsGLES() || GLExtensions::Version() != 300 ||
++      !GLExtensions::Supports("GL_EXT_color_buffer_float"))
++  {
++    PanicAlertFmtT("Browser GPU rendering requires WebGL2 and EXT_color_buffer_float.");
++    return false;
++  }
++  g_ogl_config.eSupportedGLSLVersion = GlslEs300;
++  g_ogl_config.bSupportsGLBufferStorage = false;
++  g_ogl_config.bSupportsGLPinnedMemory = false;
++  g_ogl_config.bSupportsGLBaseVertex = false;
++  g_ogl_config.bSupportsMSAA = false;
++  g_ogl_config.bSupportsTextureSubImage = false;
++  g_ogl_config.bSupportsCopySubImage = false;
++  g_ogl_config.bSupportsDebug = false;
++  g_ogl_config.bSupportsImageLoadStore = false;
++  g_ogl_config.bSupportsConservativeDepth = false;
++  g_ogl_config.bSupportViewportFloat = false;
++  g_backend_info.bSupportsReversedDepthRange = false;
++  g_backend_info.bSupportsDepthClamp = false;
++  g_backend_info.bSupportsDepthReadback = false;
++  g_backend_info.bSupportsGeometryShaders = false;
++  g_backend_info.bSupportsComputeShaders = false;
++  g_backend_info.bSupportsFragmentStoresAndAtomics = false;
++  g_backend_info.bSupportsVSLinePointExpand = false;
++  g_backend_info.bSupportsPaletteConversion = false;
++  g_backend_info.bSupportsBindingLayout = false;
++  g_backend_info.bSupportsClipControl = false;
++  g_backend_info.bSupportsSettingObjectNames = false;
++  g_backend_info.bSupportsDualSourceBlend = false;
++  g_backend_info.bSupportsLogicOp = false;
++  g_backend_info.bSupportsGSInstancing = false;
++  g_backend_info.bSupportsSSAA = false;
++  g_backend_info.bSupportsFramebufferFetch = false;
++  g_ogl_config.SupportedFramebufferFetch = EsFbFetchType::FbFetchNone;
++  g_backend_info.bSupportsBitfield = false;
++  g_backend_info.bSupportsDynamicSamplerIndexing = false;
++  g_backend_info.bSupportsCoarseDerivatives = false;
++  g_backend_info.bSupportsTextureQueryLevels = false;
++  supports_glsl_cache = false;
++#endif
++
+   // Supported by all GS-supporting ES and 4.3+
+   g_backend_info.bSupportsGLLayerInFS =
+       g_backend_info.bSupportsGeometryShaders && g_ogl_config.eSupportedGLSLVersion >= Glsl430;
+@@ -704,6 +748,11 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+   // Background compiling is supported only when shared contexts aren't broken.
+   g_backend_info.bSupportsBackgroundCompiling =
+       !DriverDetails::HasBug(DriverDetails::BUG_SHARED_CONTEXT_SHADER_COMPILATION);
++#ifdef __EMSCRIPTEN__
++  // An OffscreenCanvas context belongs to one worker and cannot be shared with
++  // Dolphin's shader compiler threads.
++  g_backend_info.bSupportsBackgroundCompiling = false;
++#endif
+ 
+   // Program binaries are supported on GL4.1+, ARB_get_program_binary, or ES3.
+   if (supports_glsl_cache)
+diff --git a/Source/Core/VideoBackends/OGL/OGLTexture.cpp b/Source/Core/VideoBackends/OGL/OGLTexture.cpp
+index 003a7ec..f2d2eaf 100644
+--- a/Source/Core/VideoBackends/OGL/OGLTexture.cpp
++++ b/Source/Core/VideoBackends/OGL/OGLTexture.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "VideoBackends/OGL/OGLTexture.h"
+ 
++#include <cstring>
++
+ #include "Common/Assert.h"
+ #include "Common/CommonTypes.h"
+ #include "Common/GL/GLUtil.h"
+@@ -113,11 +115,15 @@ GLenum GetGLTypeForTextureFormat(AbstractTextureFormat format)
+ 
+ bool UsePersistentStagingBuffers()
+ {
++#ifdef __EMSCRIPTEN__
++  return false;
++#else
+   // We require ARB_buffer_storage to create the persistent mapped buffer,
+   // ARB_shader_image_load_store for glMemoryBarrier, and ARB_sync to ensure
+   // the GPU has finished the copy before reading the buffer from the CPU.
+   return g_ogl_config.bSupportsGLBufferStorage && g_ogl_config.bSupportsImageLoadStore &&
+          g_ogl_config.bSupportsGLSync;
++#endif
+ }
+ }  // Anonymous namespace
+ 
+@@ -412,18 +418,23 @@ OGLStagingTexture::OGLStagingTexture(StagingTextureType type, const TextureConfi
+ {
+   m_map_pointer = map_ptr;
+   m_map_stride = map_stride;
++#ifdef __EMSCRIPTEN__
++  m_browser_buffer.resize(buffer_size);
++#endif
+ }
+ 
+ OGLStagingTexture::~OGLStagingTexture()
+ {
+   if (m_fence != nullptr)
+     glDeleteSync(m_fence);
++#ifndef __EMSCRIPTEN__
+   if (m_map_pointer)
+   {
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, m_buffer_name);
+     glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+   }
++#endif
+   if (m_buffer_name != 0)
+     glDeleteBuffers(1, &m_buffer_name);
+ }
+@@ -526,6 +537,31 @@ void OGLStagingTexture::CopyFromTexture(const AbstractTexture* src,
+                                 src_level, src_layer);
+       glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, 0, 0, 0);
+     }
++#ifdef __EMSCRIPTEN__
++    if (src->GetFormat() == AbstractTextureFormat::R32F)
++    {
++      // EXT_color_buffer_float guarantees RGBA/FLOAT readback. RED/FLOAT is
++      // implementation-dependent in WebGL2, even when the attachment is R32F.
++      // Preserve the staging texture's compact R32F layout and untouched rows.
++      glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++      glPixelStorei(GL_PACK_ROW_LENGTH, 0);
++      const size_t width = src_rect.GetWidth();
++      const size_t height = src_rect.GetHeight();
++      m_browser_float_readback.resize(width * height * 4);
++      glReadPixels(src_rect.left, src_rect.top, width, height, GL_RGBA, GL_FLOAT,
++                   m_browser_float_readback.data());
++      for (size_t y = 0; y < height; ++y)
++      {
++        char* row = m_browser_buffer.data() + dst_offset + y * m_map_stride;
++        for (size_t x = 0; x < width; ++x)
++          std::memcpy(row + x * sizeof(float),
++                      &m_browser_float_readback[(y * width + x) * 4], sizeof(float));
++      }
++      glBindBuffer(GL_PIXEL_PACK_BUFFER, m_buffer_name);
++      glBufferSubData(GL_PIXEL_PACK_BUFFER, 0, m_buffer_size, m_browser_buffer.data());
++    }
++    else
++#endif
+     glReadPixels(src_rect.left, src_rect.top, src_rect.GetWidth(), src_rect.GetHeight(),
+                  GetGLFormatForTextureFormat(src->GetFormat()),
+                  GetGLTypeForTextureFormat(src->GetFormat()), reinterpret_cast<void*>(dst_offset));
+@@ -574,7 +610,11 @@ void OGLStagingTexture::CopyToTexture(const MathUtil::Rectangle<int>& src_rect,
+     // Unmap the buffer before writing when not using persistent mappings.
+     if (m_map_pointer)
+     {
++#ifdef __EMSCRIPTEN__
++      glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, m_buffer_size, m_map_pointer);
++#else
+       glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
++#endif
+       m_map_pointer = nullptr;
+     }
+   }
+@@ -630,6 +670,16 @@ bool OGLStagingTexture::Map()
+   if (m_map_pointer)
+     return true;
+ 
++#ifdef __EMSCRIPTEN__
++  m_map_pointer = m_browser_buffer.data();
++  if (m_type != StagingTextureType::Upload)
++  {
++    glBindBuffer(m_target, m_buffer_name);
++    glGetBufferSubData(m_target, 0, m_buffer_size, m_map_pointer);
++    glBindBuffer(m_target, 0);
++  }
++  return true;
++#else
+   // Slow path, map the texture, unmap it later.
+   GLenum flags;
+   if (m_type == StagingTextureType::Readback)
+@@ -642,6 +692,7 @@ bool OGLStagingTexture::Map()
+   m_map_pointer = static_cast<char*>(glMapBufferRange(m_target, 0, m_buffer_size, flags));
+   glBindBuffer(m_target, 0);
+   return m_map_pointer != nullptr;
++#endif
+ }
+ 
+ void OGLStagingTexture::Unmap()
+@@ -651,7 +702,12 @@ void OGLStagingTexture::Unmap()
+     return;
+ 
+   glBindBuffer(m_target, m_buffer_name);
++#ifdef __EMSCRIPTEN__
++  if (m_type != StagingTextureType::Readback)
++    glBufferSubData(m_target, 0, m_buffer_size, m_map_pointer);
++#else
+   glUnmapBuffer(m_target);
++#endif
+   glBindBuffer(m_target, 0);
+   m_map_pointer = nullptr;
+ }
+diff --git a/Source/Core/VideoBackends/OGL/OGLTexture.h b/Source/Core/VideoBackends/OGL/OGLTexture.h
+index eb574f3..05e608d 100644
+--- a/Source/Core/VideoBackends/OGL/OGLTexture.h
++++ b/Source/Core/VideoBackends/OGL/OGLTexture.h
+@@ -96,6 +96,10 @@ private:
+   GLuint m_buffer_name;
+   size_t m_buffer_size;
+   GLsync m_fence = nullptr;
++#ifdef __EMSCRIPTEN__
++  std::vector<char> m_browser_buffer;
++  std::vector<float> m_browser_float_readback;
++#endif
+ };
+ 
+ class OGLFramebuffer final : public AbstractFramebuffer

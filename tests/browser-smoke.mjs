@@ -5,11 +5,17 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBootProbe } from '../native/tests/boot-probe.mjs';
 import { createWadBootProbe } from '../native/tests/wad-boot-probe.mjs';
+import { createGxBootProbe } from '../native/tests/gx-boot-probe.mjs';
 
 const playwright = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
 const browserName = process.env.SMOKE_BROWSER || 'chromium';
-assert.ok(['chromium', 'webkit'].includes(browserName), 'Unsupported smoke-test browser');
+assert.ok(['chromium', 'webkit', 'firefox'].includes(browserName), 'Unsupported smoke-test browser');
+const expectGPU = process.env.SMOKE_EXPECT_GPU === '1';
+const disableWorkerGPU = process.env.SMOKE_DISABLE_WORKER_GPU === '1';
+assert.ok(!(expectGPU && disableWorkerGPU), 'GPU-required and forced-fallback checks are separate runs');
+assert.ok(!(process.env.SMOKE_URL && (expectGPU || disableWorkerGPU)), 'GPU instrumentation requires the local smoke server');
+assert.ok(!(expectGPU || disableWorkerGPU) || process.env.EXPECT_CORE_READY === '1', 'GPU checks require real native core boot tests');
 const root = path.resolve('dist');
 let server;
 let url = process.env.SMOKE_URL;
@@ -22,7 +28,36 @@ if (!url) {
     const file = path.resolve(root, relative);
     if (!file.startsWith(root + path.sep)) { response.writeHead(403).end(); return; }
     try {
-      const content = await fs.readFile(file);
+      let content = await fs.readFile(file);
+      if ((expectGPU || disableWorkerGPU) && relative === 'src/dolphin-worker.js') {
+        // Instrument the actual worker before it loads Emscripten. Main-thread
+        // WebGL is unaffected, so this exercises native renderer negotiation.
+        const setup = disableWorkerGPU ? 'globalThis.OffscreenCanvas = undefined;' : `
+          const originalGetContext = OffscreenCanvas.prototype.getContext;
+          const observedContexts = new WeakSet();
+          OffscreenCanvas.prototype.getContext = function (...args) {
+            const gl = originalGetContext.apply(this, args);
+            if (args[0] === 'webgl2' && gl && !observedContexts.has(gl)) {
+              observedContexts.add(gl);
+              self.postMessage({ type: 'smoke-native-gl', state: 'created' });
+              let announced = false;
+              for (const method of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced']) {
+                const originalDraw = gl[method];
+                gl[method] = function (...drawArgs) {
+                  const result = originalDraw.apply(this, drawArgs);
+                  if (!announced) {
+                    announced = true;
+                    self.postMessage({ type: 'smoke-native-gl', state: 'drawn' });
+                  }
+                  return result;
+                };
+              }
+            }
+            return gl;
+          };
+        `;
+        content = Buffer.concat([Buffer.from(setup), Buffer.from('\n'), content]);
+      }
       // Deliberately omit COOP/COEP: this reproduces GitHub Pages hosting.
       response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
       response.end(content);
@@ -45,11 +80,36 @@ try {
       const OriginalWorker = window.Worker;
       window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
       window.__bootProbeWorkerCount = 0;
+      window.__bootProbeGraphics = { created: 0, drawn: 0 };
+      const originalDrawArrays = WebGL2RenderingContext.prototype.drawArrays;
+      WebGL2RenderingContext.prototype.drawArrays = function (...args) {
+        const output = originalDrawArrays.apply(this, args);
+        const result = window.__bootProbe;
+        if (this.canvas.id === 'screen' && result?.lastFrame) {
+          // Read immediately after drawing: the app deliberately does not keep
+          // the canvas drawing buffer alive after the browser presents it.
+          const { width, height } = result.lastFrame;
+          result.presentedColors = result.samples.map(({ x, y }) => {
+            const color = new Uint8Array(4);
+            this.readPixels(Math.floor(x * this.canvas.width / width),
+              this.canvas.height - 1 - Math.floor(y * this.canvas.height / height),
+              1, 1, this.RGBA, this.UNSIGNED_BYTE, color);
+            return [...color.subarray(0, 3)];
+          });
+          result.presentedMatched ||= result.samples.every((sample, i) => ['r', 'g', 'b'].every((channel, c) =>
+            Math.abs(result.presentedColors[i][c] - sample[channel]) <= 35));
+        }
+        return output;
+      };
       window.Worker = class extends OriginalWorker {
         constructor(...args) {
           super(...args);
           window.__bootProbeWorkerCount++;
           this.addEventListener('message', ({ data }) => {
+            if (data?.type === 'smoke-native-gl') {
+              window.__bootProbeGraphics[data.state]++;
+              return;
+            }
             if (data?.type !== 'video' || !data.buffer) return;
             const result = window.__bootProbe;
             const bytes = new Uint8Array(data.buffer);
@@ -60,9 +120,18 @@ try {
             });
             result.frames++;
             result.lastFrame = { width: data.width, height: data.height, colors };
-            result.matched ||= result.samples.every((sample, index) =>
+            const matches = expected => expected.every((sample, index) =>
               sample.x < data.width && sample.y < data.height &&
               ['r', 'g', 'b'].every((channel, c) => Math.abs(colors[index][c] - sample[channel]) <= 35));
+            const primary = matches(result.samples);
+            const alternate = result.alternateSamples && matches(result.alternateSamples);
+            result.matched ||= primary;
+            result.alternateMatched ||= alternate;
+            const palette = primary ? 0 : alternate ? 1 : undefined;
+            if (palette !== undefined) {
+              if (result.previousPalette !== undefined && palette !== result.previousPalette) result.paletteTransitions = (result.paletteTransitions || 0) + 1;
+              result.previousPalette = palette;
+            }
           });
         }
       };
@@ -107,7 +176,7 @@ try {
     await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
     await page.locator('#play').click();
     if (process.env.SMOKE_DEBUG) console.log('Clicked DOL Play');
-    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    await page.waitForFunction(() => window.__bootProbe?.matched === true && window.__bootProbe?.presentedMatched === true, null, { timeout: 120000 });
     console.log(JSON.stringify({ nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
   }
   await page.reload();
@@ -122,7 +191,7 @@ try {
     }, wadProbe.samples);
     await page.locator('#gameFile').setInputFiles({ name: wadProbe.fileName, mimeType: 'application/octet-stream', buffer: wadProbe.bytes });
     await page.locator('#play').click();
-    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    await page.waitForFunction(() => window.__bootProbe?.matched === true && window.__bootProbe?.presentedMatched === true, null, { timeout: 120000 });
     console.log(JSON.stringify({ nativeWadBoot: await page.evaluate(() => window.__bootProbe), titleId: wadProbe.titleId }));
 
     // Replace the running Wii channel with the original GameCube DOL in the
@@ -134,10 +203,41 @@ try {
     await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
     assert.equal(await page.locator('#play').isDisabled(), false, 'Selecting a different title must allow replacing the running WAD');
     await page.locator('#play').click();
-    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    await page.waitForFunction(() => window.__bootProbe?.matched === true && window.__bootProbe?.presentedMatched === true, null, { timeout: 120000 });
     assert.deepEqual(await page.evaluate(() => ({ timeOrigin: performance.timeOrigin, workers: window.__bootProbeWorkerCount })),
       replacementStart, 'Title replacement must keep the same page and native worker');
     console.log(JSON.stringify({ nativeTitleReplacement: 'WAD to DOL', nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
+
+    const gxProbe = createGxBootProbe({ layers: 2 });
+    const graphicsBeforeGx = await page.evaluate(() => window.__bootProbeGraphics);
+    await page.evaluate(({ samples, alternateSamples }) => {
+      window.__bootProbe = { samples, alternateSamples, frames: 0, matched: false, lastFrame: null };
+    }, { samples: gxProbe.samples, alternateSamples: gxProbe.alternateSamples });
+    await page.locator('#gameFile').setInputFiles({ name: gxProbe.fileName, mimeType: 'application/octet-stream', buffer: gxProbe.bytes });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__bootProbe?.matched && window.__bootProbe?.alternateMatched &&
+      window.__bootProbe?.presentedMatched && window.__bootProbe?.paletteTransitions >= 3, null, { timeout: 120000 });
+    console.log(JSON.stringify({ nativeGxBoot: await page.evaluate(() => window.__bootProbe), graphics: await page.evaluate(() => window.__bootProbeGraphics) }));
+    const graphicsBeforeReplacement = await page.evaluate(() => window.__bootProbeGraphics);
+    if (expectGPU) assert.ok(graphicsBeforeReplacement.created > graphicsBeforeGx.created && graphicsBeforeReplacement.drawn > graphicsBeforeGx.drawn,
+      'The GX probe itself must create and draw through native-worker WebGL');
+
+    await page.evaluate(samples => {
+      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+    }, bootProbe.samples);
+    await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__bootProbe?.matched && window.__bootProbe?.presentedMatched, null, { timeout: 120000 });
+    assert.deepEqual(await page.evaluate(() => ({ timeOrigin: performance.timeOrigin, workers: window.__bootProbeWorkerCount })),
+      replacementStart, 'GX replacement must keep the same page and native worker');
+    const graphics = await page.evaluate(() => window.__bootProbeGraphics);
+    if (expectGPU) {
+      assert.ok(graphicsBeforeReplacement.drawn >= 1, 'The GX probe must execute actual native-worker WebGL draws');
+      assert.ok(graphics.created > graphicsBeforeReplacement.created && graphics.drawn > graphicsBeforeReplacement.drawn,
+        'Replacing the title must initialize and draw through a fresh native graphics context');
+    }
+    if (disableWorkerGPU) assert.deepEqual(graphics, { created: 0, drawn: 0 }, 'Software fallback must boot all probes without a worker graphics context');
+    console.log(JSON.stringify({ nativeTitleReplacement: 'GX to DOL', graphics, forcedSoftwareFallback: disableWorkerGPU }));
   }
   await page.evaluate(() => navigator.serviceWorker.ready);
   if (server) {

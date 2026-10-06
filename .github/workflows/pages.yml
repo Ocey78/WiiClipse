@@ -26,7 +26,7 @@ jobs:
       - name: Fetch pinned verified native core
         run: node scripts/fetch-core.mjs
       - run: npm run verify
-      - run: npx playwright install --with-deps chromium webkit
+      - run: npx playwright install --with-deps chromium webkit firefox
       - name: Verify Chromium frame scheduling
         run: node tests/scheduler-browser.mjs
       - name: Verify WebKit frame scheduling
@@ -51,6 +51,11 @@ jobs:
           SMOKE_BROWSER: webkit
       - name: Verify WebGL pixel uploads and resizing
         run: node tests/renderer-browser.mjs
+      - name: Check Firefox startup and native boot
+        env:
+          SMOKE_BROWSER: firefox
+          EXPECT_CORE_READY: '1'
+        run: npm run test:browser
       - name: Verify browser audio streaming
         run: node tests/browser-audio.mjs
       - name: Verify WebKit audio streaming

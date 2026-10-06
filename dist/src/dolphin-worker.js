@@ -67,7 +67,7 @@ async function mountPersistentStorage() {
   await syncFS(true);
 }
 
-async function initialize() {
+async function initialize(options = {}) {
   if (adapter?.isReady()) return { version: 'dolphin-web' };
   status('Loading Dolphin WebAssembly core…');
   const { factory, url } = await importCoreFactory();
@@ -75,6 +75,9 @@ async function initialize() {
 
   moduleInstance = await factory({
     noInitialRun: true,
+    // Software override supports correctness/performance comparisons on the
+    // same CPU core; normal boot negotiates native WebGL2 with a safe fallback.
+    dwebRenderer: options.renderer === 'software' ? 'software' : 'hardware',
     // Emscripten's default pthread URL drops import.meta.url's query string.
     mainScriptUrlOrBlob: url,
     locateFile: (path) => coreAssetURL(path, url),
@@ -117,7 +120,7 @@ self.addEventListener('message', async ({ data = {} }) => {
   try {
     switch (data.type) {
       case 'init': {
-        const info = await initialize();
+        const info = await initialize(data);
         send('ready', { version: info.version || 'dolphin-web' });
         break;
       }
