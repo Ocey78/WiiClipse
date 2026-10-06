@@ -4,8 +4,10 @@ import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const { chromium } = await import(process.env.PLAYWRIGHT_MODULE
+const playwright = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
+const browserName = process.env.SMOKE_BROWSER || 'chromium';
+assert.ok(['chromium', 'webkit'].includes(browserName), 'Unsupported smoke-test browser');
 const root = path.resolve('dist');
 let server;
 let url = process.env.SMOKE_URL;
@@ -30,7 +32,7 @@ if (!url) {
 
 let browser;
 try {
-  browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  browser = await playwright[browserName].launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   const context = await browser.newContext();
   const page = await context.newPage();
   const errors = [];
@@ -62,7 +64,7 @@ try {
   await page.locator('#chooseGame').waitFor();
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.deepEqual(errors, [], 'App startup must not throw uncaught errors');
-  console.log(JSON.stringify({ url, coreState, checks: ['first visit', 'isolation', 'SharedArrayBuffer', 'file selection', 'missing-core guard', 'reload', 'offline shell', 'no uncaught errors'] }));
+  console.log(JSON.stringify({ browser: browserName, url, coreState, checks: ['first visit', 'isolation', 'SharedArrayBuffer', 'file selection', 'missing-core guard', 'reload', 'offline shell', 'no uncaught errors'] }));
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));
