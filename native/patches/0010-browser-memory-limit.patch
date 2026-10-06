@@ -1,0 +1,28 @@
+diff --git a/Source/Core/Common/MemoryUtil.cpp b/Source/Core/Common/MemoryUtil.cpp
+index 5d5085a..662cd24 100644
+--- a/Source/Core/Common/MemoryUtil.cpp
++++ b/Source/Core/Common/MemoryUtil.cpp
+@@ -22,7 +22,9 @@
+ #if defined(__APPLE__) && defined(__aarch64__)
+ #include <mach/mach.h>
+ #endif
+-#if defined __APPLE__ || defined __FreeBSD__ || defined __OpenBSD__ || defined __NetBSD__
++#if defined(__EMSCRIPTEN__)
++#include <emscripten/heap.h>
++#elif defined __APPLE__ || defined __FreeBSD__ || defined __OpenBSD__ || defined __NetBSD__
+ #include <sys/sysctl.h>
+ #elif defined __HAIKU__
+ #include <OS.h>
+@@ -335,7 +337,11 @@ bool UnWriteProtectMemory(void* ptr, size_t size, bool allowExecute)
+ 
+ size_t MemPhysical()
+ {
+-#ifdef _WIN32
++#if defined(__EMSCRIPTEN__)
++  // Browsers do not expose physical RAM. Bound resource-cache budgets by the
++  // module's maximum linear memory, including any configured memory growth.
++  return emscripten_get_heap_max();
++#elif defined(_WIN32)
+   MEMORYSTATUSEX memInfo;
+   memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+   GlobalMemoryStatusEx(&memInfo);

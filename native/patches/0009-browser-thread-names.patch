@@ -1,0 +1,22 @@
+--- a/Source/Core/Common/Thread.cpp
++++ b/Source/Core/Common/Thread.cpp
+@@ -9,6 +9,10 @@
+ #else
+ #include <pthread.h>
+ #include <unistd.h>
++#endif
++
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
+ #endif
+ 
+ #ifdef __APPLE__
+@@ -177,6 +181,8 @@
+ {
+ #ifdef __APPLE__
+   pthread_setname_np(name);
++#elif defined(__EMSCRIPTEN__)
++  emscripten_set_thread_name(pthread_self(), name);
+ #elif defined __FreeBSD__ || defined __OpenBSD__
+   pthread_set_name_np(pthread_self(), name);
+ #elif defined(__NetBSD__)

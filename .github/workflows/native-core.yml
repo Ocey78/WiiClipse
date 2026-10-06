@@ -40,6 +40,9 @@ jobs:
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           set -o pipefail
           bash native/build-dolphin-wasm.sh 2>&1 | tee native-build.log
+      - name: Report compiler cache statistics
+        if: always() && steps.native-compile.outcome != 'skipped'
+        run: ccache --show-stats
       - name: Retain unverified core for browser diagnostics
         if: steps.native-compile.outcome == 'success'
         uses: actions/upload-artifact@v4

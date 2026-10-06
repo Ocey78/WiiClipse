@@ -20,7 +20,7 @@
  if(ENABLE_VULKAN)
    target_sources(dolphin_libretro PRIVATE
      Vulkan.cpp
-@@ -27,6 +33,33 @@
+@@ -27,6 +33,38 @@
  set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
  
  set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
@@ -37,6 +37,11 @@
 +    "-sALLOW_MEMORY_GROWTH=1"
 +    "-sINITIAL_MEMORY=268435456"
 +    "-sMAXIMUM_MEMORY=2147483648"
++    # Existing desktop paths contain stack objects larger than 64 KiB.
++    # Reserve explicit stacks and diagnose overflow in this experimental port.
++    "-sSTACK_SIZE=8388608"
++    "-sDEFAULT_PTHREAD_STACK_SIZE=2097152"
++    "-sSTACK_OVERFLOW_CHECK=2"
 +    # DVD, resources, input scanning, saves, and Wii services still use threads
 +    # in single-core mode. Fail on exhaustion instead of blocking on a new worker.
 +    "-sPTHREAD_POOL_SIZE=24"
