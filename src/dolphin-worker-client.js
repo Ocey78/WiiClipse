@@ -4,15 +4,32 @@ export class DolphinWorkerClient {
     this.worker = worker;
     this.callbacks = callbacks;
     this.ready = false;
+    this.running = false;
+    this.framePending = false;
+    this.booting = null;
     this.initializing = null;
     this.resolveInit = null;
     this.rejectInit = null;
+    this.resolveBoot = null;
+    this.rejectBoot = null;
     worker.addEventListener('message', (event) => this.#onMessage(event.data || {}));
     worker.addEventListener?.('error', (event) => {
       const error = new Error(event?.message || 'Dolphin worker failed.');
-      this.rejectInit?.(error);
-      this.callbacks.onError?.(error);
+      this.#fail(error);
     });
+  }
+
+  #fail(error, recoverable = false) {
+    if (!recoverable) this.ready = false;
+    this.running = false;
+    this.framePending = false;
+    this.rejectInit?.(error);
+    this.resolveInit = null;
+    this.rejectInit = null;
+    this.rejectBoot?.(error);
+    this.resolveBoot = null;
+    this.rejectBoot = null;
+    this.callbacks.onError?.(error);
   }
 
   #onMessage(message) {
@@ -27,13 +44,16 @@ export class DolphinWorkerClient {
       case 'unavailable':
       case 'error': {
         const error = new Error(message.message || 'Dolphin core unavailable.');
-        this.ready = false;
-        this.rejectInit?.(error);
-        this.resolveInit = null;
-        this.rejectInit = null;
-        this.callbacks.onError?.(error);
+        this.#fail(error, message.type === 'error' && message.operation === 'boot' && message.recoverable === true);
         break;
       }
+      case 'booted':
+        this.running = true;
+        this.resolveBoot?.();
+        this.resolveBoot = null;
+        this.rejectBoot = null;
+        break;
+      case 'frame-done': this.framePending = false; break;
       case 'video': this.callbacks.onVideo?.(message); break;
       case 'audio': this.callbacks.onAudio?.(message); break;
       case 'status': this.callbacks.onStatus?.(message.message || ''); break;
@@ -49,18 +69,39 @@ export class DolphinWorkerClient {
       this.resolveInit = resolve;
       this.rejectInit = reject;
     }).finally(() => { this.initializing = null; });
-    this.worker.postMessage({ type: 'init' });
+    try { this.worker.postMessage({ type: 'init' }); }
+    catch (error) { this.#fail(error); }
     return this.initializing;
   }
 
   isReady() { return this.ready; }
   bootGame(file) {
-    if (!this.ready) throw new Error('Dolphin core is not ready.');
-    this.worker.postMessage({ type: 'boot', file });
+    if (!this.ready) return Promise.reject(new Error('Dolphin core is not ready.'));
+    if (this.booting) return Promise.reject(new Error('A game is already booting.'));
+    this.running = false;
+    this.framePending = false;
+    this.booting = new Promise((resolve, reject) => {
+      this.resolveBoot = resolve;
+      this.rejectBoot = reject;
+    }).finally(() => { this.booting = null; });
+    try { this.worker.postMessage({ type: 'boot', file }); }
+    catch (error) { this.#fail(error, true); }
+    return this.booting;
   }
   setInput(snapshot) { if (this.ready) this.worker.postMessage({ type: 'input', snapshot }); }
-  runFrame() { if (this.ready) this.worker.postMessage({ type: 'frame' }); }
-  unloadGame() { if (this.ready) this.worker.postMessage({ type: 'unload' }); }
+  runFrame() {
+    if (!this.ready || !this.running || this.framePending) return;
+    this.framePending = true;
+    try { this.worker.postMessage({ type: 'frame' }); }
+    catch (error) { this.#fail(error); }
+  }
+  unloadGame() {
+    this.running = false;
+    if (this.ready) this.worker.postMessage({ type: 'unload' });
+  }
   syncSaves() { if (this.ready) this.worker.postMessage({ type: 'sync-saves' }); }
-  terminate() { this.worker.terminate?.(); this.ready = false; }
+  terminate() {
+    this.#fail(new Error('Dolphin worker was terminated.'));
+    this.worker.terminate?.();
+  }
 }

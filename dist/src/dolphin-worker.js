@@ -36,6 +36,7 @@ function coreAssetURL(file, moduleURL) {
 }
 
 function syncFS(populate = false) {
+  if (!moduleInstance?.FS?.syncfs) return Promise.resolve();
   return new Promise((resolve, reject) => {
     moduleInstance.FS.syncfs(populate, (error) => error ? reject(error) : resolve());
   });
@@ -116,6 +117,7 @@ self.addEventListener('message', async ({ data = {} }) => {
         running = true;
         frameCount = 0;
         status('Running');
+        send('booted');
         break;
       }
       case 'frame':
@@ -124,13 +126,21 @@ self.addEventListener('message', async ({ data = {} }) => {
           frameCount++;
           if (frameCount % 600 === 0) syncFS(false).catch(() => {});
         }
+        send('frame-done');
         break;
       case 'input': adapter?.setInput(data.snapshot); break;
       case 'unload': await unmountGame(); status('Game unloaded'); break;
-      case 'sync-saves': await syncFS(false); break;
+      case 'sync-saves':
+        await syncFS(false).catch((error) => send('log', { level: 'warn', message: `Could not save progress: ${error.message}` }));
+        break;
       default: break;
     }
   } catch (error) {
-    send(data.type === 'init' ? 'unavailable' : 'error', { message: error?.message || String(error) });
+    running = false;
+    send(data.type === 'init' ? 'unavailable' : 'error', {
+      message: error?.message || String(error),
+      operation: data.type,
+      recoverable: data.type === 'boot' && adapter?.isReady() === true,
+    });
   }
 });

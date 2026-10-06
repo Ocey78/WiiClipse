@@ -7,6 +7,7 @@ class FakeWorker {
   addEventListener(type, cb) { this.listeners.set(type, cb); }
   postMessage(message) { this.sent.push(message); }
   emit(data) { this.listeners.get('message')?.({ data }); }
+  fail(message) { this.listeners.get('error')?.({ message }); }
   terminate() { this.terminated = true; }
 }
 
@@ -27,7 +28,88 @@ test('worker client transfers selected File object without converting it to Arra
   worker.emit({ type: 'ready', version: 'test' });
   await pending;
   const file = { name: 'game.iso', size: 1234, slice() {} };
-  client.bootGame(file);
+  const boot = client.bootGame(file);
   assert.equal(worker.sent.at(-1).type, 'boot');
   assert.equal(worker.sent.at(-1).file, file);
+  worker.emit({ type: 'booted' });
+  await boot;
+});
+
+async function readyClient(callbacks) {
+  const worker = new FakeWorker();
+  const client = new DolphinWorkerClient(worker, callbacks);
+  const init = client.initialize();
+  worker.emit({ type: 'ready', version: 'test' });
+  await init;
+  return { worker, client };
+}
+
+test('frames wait for confirmed boot and at most one frame is in flight', async () => {
+  const { worker, client } = await readyClient();
+  const boot = client.bootGame({ name: 'game.iso' });
+  let booted = false;
+  Promise.resolve(boot).then(() => { booted = true; });
+  await Promise.resolve();
+  assert.equal(booted, false, 'boot must remain pending until the worker accepts the game');
+  client.runFrame();
+  assert.equal(worker.sent.filter(({ type }) => type === 'frame').length, 0);
+  worker.emit({ type: 'booted' });
+  await boot;
+  client.runFrame();
+  client.runFrame();
+  assert.equal(worker.sent.filter(({ type }) => type === 'frame').length, 1);
+  worker.emit({ type: 'frame-done' });
+  client.runFrame();
+  assert.equal(worker.sent.filter(({ type }) => type === 'frame').length, 2);
+});
+
+test('rejected game can be retried without reinitializing the native core', async () => {
+  const { worker, client } = await readyClient();
+  const boot = client.bootGame({ name: 'bad.iso' });
+  const rejected = assert.rejects(boot, /rejected/);
+  worker.emit({ type: 'error', operation: 'boot', recoverable: true, message: 'Game rejected' });
+  await rejected;
+  assert.equal(client.isReady(), true);
+  client.runFrame();
+  assert.equal(worker.sent.some(({ type }) => type === 'frame'), false);
+  const retry = client.bootGame({ name: 'good.iso' });
+  worker.emit({ type: 'booted' });
+  await retry;
+  client.runFrame();
+  assert.equal(worker.sent.at(-1).type, 'frame');
+});
+
+test('worker crash rejects a pending boot and disables further requests', async () => {
+  const { worker, client } = await readyClient();
+  const boot = client.bootGame({ name: 'game.iso' });
+  const rejected = assert.rejects(boot, /crashed/);
+  worker.fail('Worker crashed');
+  await rejected;
+  assert.equal(client.isReady(), false);
+  const count = worker.sent.length;
+  client.runFrame();
+  client.syncSaves();
+  assert.equal(worker.sent.length, count);
+});
+
+test('failed init dispatch rejects the initialization promise and permits retry', async () => {
+  const worker = new FakeWorker();
+  const client = new DolphinWorkerClient(worker);
+  worker.postMessage = () => { throw new Error('Cannot start worker'); };
+  await assert.rejects(async () => client.initialize(), /Cannot start worker/);
+  worker.postMessage = FakeWorker.prototype.postMessage;
+  const retry = client.initialize();
+  assert.equal(worker.sent.at(-1)?.type, 'init');
+  worker.emit({ type: 'ready' });
+  await retry;
+});
+
+test('terminating a loading worker settles its pending initialization', async () => {
+  const worker = new FakeWorker();
+  const client = new DolphinWorkerClient(worker);
+  const init = client.initialize();
+  const rejected = assert.rejects(init, /terminated/i);
+  client.terminate();
+  await rejected;
+  assert.equal(client.isReady(), false);
 });

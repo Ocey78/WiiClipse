@@ -1,0 +1,6 @@
+node_modules/
+native/.build/
+native/.emsdk/
+native-build.log
+test-results/
+playwright-report/

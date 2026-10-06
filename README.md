@@ -1,5 +1,9 @@
 # Dolphin Web — iOS 18+
 
+**WiiClipse site:** https://ocey78.github.io/WiiClipse/
+
+The browser app is published automatically after its tests and browser startup checks pass. The native Dolphin core is experimental and is not included in the site yet; opening the site is not a claim that GameCube games can boot.
+
 Dolphin Web is a **client-side** GameCube browser port project targeting Safari on iOS/iPadOS 18+. It uses a PWA frontend, a dedicated Web Worker, Emscripten/WebAssembly, WebGL2 for presentation, WebAudio, browser-local saves, touch controls, and the Gamepad API. There is no remote Dolphin server and no game streaming.
 
 ## What is implemented
@@ -17,6 +21,14 @@ npm start
 ```
 
 On Windows you can run `build-ios-web.bat` and `run-local.bat`. For the native core, `build-core-wsl.bat` bootstraps Emscripten in WSL and runs the pinned Dolphin build automatically.
+
+For the browser smoke check, run `npm ci`, `npx playwright install chromium`, then `npm run verify && npm run test:browser`. It serves the built app below `/WiiClipse/` without server isolation headers and checks first-visit startup, shared-memory availability, file selection, reload, and the offline app shell. It does not simulate a successful native game boot.
+
+## GitHub Pages
+
+`.github/workflows/pages.yml` tests and deploys `dist/` whenever `main` changes. The repository's Pages source is **GitHub Actions**. Relative asset paths support the `/WiiClipse/` project URL.
+
+The service worker adds the isolation headers required for shared memory on this static host. The first visit may reload once before the app starts. Offline caching covers the app shell; it does not cache game files or the native core. Games remain on your device.
 
 ## Build the real Dolphin WASM core
 
@@ -39,4 +51,4 @@ Add the HTTPS deployment to the iPhone Home Screen for the PWA-style experience.
 
 ## Current verification boundary
 
-The JavaScript worker/frontend, native ABI source, build patch, static PWA build, and automated tests are verifiable in this repository. The current execution environment does **not** contain `emcc` and its shell cannot reach GitHub, so a compiled `dolphin-core.wasm` is not included or falsely represented as tested. Run the native build on a machine with Emscripten and GitHub access to perform the first real GameCube homebrew/ISO boot test.
+The JavaScript worker/frontend, source-level native ABI checks, static PWA build, and real Chromium startup checks are tested. A compiled `dolphin-core.wasm` is not included, and actual GameCube boot or iOS/Safari emulation has not been verified. The manual **Build experimental Dolphin core** workflow attempts the native compilation separately and preserves its build logs. See `native/README.md` for the remaining porting gaps; compiling the core alone does not establish that it can boot a game.

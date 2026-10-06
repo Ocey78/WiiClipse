@@ -1,8 +1,8 @@
 # Dolphin Web native core
 
-This directory turns the maintained `libretro/dolphin` frontend into an Emscripten module for the browser shell.
+This directory contains an experimental Emscripten build and browser host for the maintained `libretro/dolphin` frontend. It has not yet produced a verified browser emulator core. A successful web build or frontend test run does not establish that GameCube or Wii software can boot.
 
-The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534` so the patch is reproducible. The browser host deliberately requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and starts with the **Software Renderer**. This is the compatibility-first path for iOS Safari where native executable-memory JIT is not available to a normal web app.
+The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The patch has been checked against that exact commit. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These settings are intended for a browser port; they are not proof of iOS or game compatibility.
 
 ## Prerequisites
 
@@ -38,4 +38,11 @@ The included Node server sends those headers plus `Cross-Origin-Resource-Policy:
 
 ## Current milestone
 
-The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and reproducible Dolphin build patch are implemented. A real `dolphin-core.wasm` must still be compiled on a machine with Emscripten and network access; this execution environment does not have `emcc` and cannot clone GitHub from the shell, so the native binary itself is not falsely bundled as if it had been verified here.
+The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and initial Dolphin build patch are implemented. The native tests currently check source structure, not compiled execution. The **Build experimental Dolphin core** GitHub Actions workflow can be run manually; it pins Emscripten 4.0.23, retains the build log, and uploads core files only if compilation succeeds. It does not publish a site or certify game boot.
+
+Source inspection at the pinned revision found additional porting work beyond the existing CMake patch:
+
+- `Source/Core/DolphinLibretro/Video.h` constructs the software graphics backend with `SWOGLWindow::Create`. That path still uses the libretro OpenGL context, whose initialization requires a hardware-context reset. The browser host currently rejects hardware rendering and does not supply that reset. The software presentation path therefore needs browser-specific implementation and execution tests.
+- `Source/Core/Common/CMakeLists.txt` selects `MemArenaUnix.cpp` for Emscripten. This uses `shm_open`, `mmap`, and mapping protection; disabling fastmem does not remove the physical-memory allocation path. Its browser behavior remains unverified.
+
+Completion requires a successful native build, loading that module in a cross-origin-isolated browser, and a real boot test with a suitable homebrew or user-provided game, including audio, video, input, and stop/restart. No compiled core or game-boot result is claimed by this scaffold.

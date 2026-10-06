@@ -11,13 +11,18 @@ const input = new InputState();
 const canvas = $('#screen');
 const audio = new AudioSink();
 let renderer;
+let rendererError = null;
 let selectedGame = null;
 let gameRunning = false;
+let gameBooting = false;
+let runningGame = null;
 
 try {
   renderer = new WebGLRenderer(canvas);
   renderer.clear();
 } catch (error) {
+  renderer = null;
+  rendererError = error;
   $('#status').textContent = error.message;
 }
 
@@ -25,37 +30,53 @@ $('#capabilities').innerHTML = Object.entries(caps)
   .map(([key, value]) => `<span class="badge ${value ? 'ok' : 'no'}">${key}: ${value ? 'yes' : 'no'}</span>`)
   .join('');
 
-const worker = typeof Worker === 'function'
-  ? new Worker(new URL('./dolphin-worker.js', import.meta.url), { type: 'module', name: 'dolphin-core' })
-  : null;
+let worker = null;
+let workerStartupError = null;
+try {
+  if (typeof Worker === 'function') {
+    worker = new Worker(new URL('./dolphin-worker.js', import.meta.url), { type: 'module', name: 'dolphin-core' });
+  }
+} catch (error) { workerStartupError = error; }
 
 const core = worker ? new DolphinWorkerClient(worker, {
   onVideo: (frame) => renderer?.presentXRGB8888(frame),
   onAudio: (chunk) => audio.push(chunk),
-  onStatus: (message) => { if (message) $('#status').textContent = message; },
+  onStatus: (message) => { if (message) $('#status').textContent = rendererError?.message || message; },
   onLog: ({ level = 'info', message = '' }) => console[level === 'error' ? 'error' : 'log'](`[Dolphin] ${message}`),
   onError: (error) => {
     $('#status').textContent = error.message;
-    $('#coreState').textContent = 'Native core unavailable';
+    if (!core.isReady()) {
+      $('#coreState').textContent = 'Native core unavailable';
+      $('#coreState').classList.remove('ready');
+    }
     gameRunning = false;
+    runningGame = null;
+    updatePlayState();
   },
 }) : null;
+
+function updatePlayState() {
+  $('#play').disabled = !renderer || !selectedGame || !core?.isReady() || gameBooting
+    || (gameRunning && selectedGame === runningGame);
+}
 
 async function initializeCore() {
   if (!core) {
     $('#coreState').textContent = 'Web Workers unavailable';
-    $('#status').textContent = 'This browser cannot run the Dolphin worker.';
+    $('#status').textContent = workerStartupError?.message || 'This browser cannot run the Dolphin worker.';
     return;
   }
   try {
     const { version } = await core.initialize();
     $('#coreState').textContent = `Core ready • ${version}`;
     $('#coreState').classList.add('ready');
-    $('#status').textContent = 'Select a GameCube game or homebrew file.';
-    $('#play').disabled = !selectedGame;
+    $('#status').textContent = rendererError?.message || 'Select a GameCube game or homebrew file.';
+    updatePlayState();
   } catch (error) {
-    $('#coreState').textContent = 'Native core not built';
+    $('#coreState').textContent = /not installed|not built/i.test(error.message) ? 'Native core not built' : 'Native core unavailable';
+    $('#coreState').classList.remove('ready');
     $('#status').textContent = error.message;
+    updatePlayState();
   }
 }
 initializeCore();
@@ -72,7 +93,7 @@ fileInput.addEventListener('change', () => {
     : `${(meta.bytes / 1024 ** 2).toFixed(1)} MB`;
   $('#gameMeta').textContent = meta.supported ? `${meta.system} • ${size} • stays on device` : meta.reason;
   selectedGame = meta.supported ? file : null;
-  $('#play').disabled = !meta.supported || !core?.isReady();
+  updatePlayState();
 });
 
 $('#play').addEventListener('click', async () => {
@@ -80,16 +101,24 @@ $('#play').addEventListener('click', async () => {
     $('#status').textContent = 'Dolphin WASM core is not loaded. Build it with native/build-dolphin-wasm.sh.';
     return;
   }
-  if (!selectedGame) return;
-  await audio.resume();
-  $('#status').textContent = 'Sending game to Dolphin worker…';
+  if (!selectedGame || !renderer || gameBooting || (gameRunning && selectedGame === runningGame)) return;
+  const game = selectedGame;
+  gameBooting = true;
+  updatePlayState();
   try {
-    core.bootGame(selectedGame);
+    await audio.resume();
+    $('#status').textContent = 'Sending game to Dolphin worker…';
+    gameRunning = false;
+    await core.bootGame(game);
     gameRunning = true;
-    $('#play').disabled = true;
+    runningGame = game;
   } catch (error) {
     gameRunning = false;
+    runningGame = null;
     $('#status').textContent = error.message;
+  } finally {
+    gameBooting = false;
+    updatePlayState();
   }
 });
 
@@ -147,5 +176,3 @@ window.addEventListener('pagehide', () => core?.syncSaves());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') core?.syncSaves();
 });
-
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
