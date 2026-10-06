@@ -1,0 +1,29 @@
+diff --git a/Source/Core/Common/Timer.cpp b/Source/Core/Common/Timer.cpp
+index 8d10cd5..0aa6561 100644
+--- a/Source/Core/Common/Timer.cpp
++++ b/Source/Core/Common/Timer.cpp
+@@ -210,7 +210,7 @@ auto SteadyAwakeClock::now() -> time_point
+   // Note that Linux's CLOCK_MONOTONIC "does not count time that the system is suspended".
+   // This is in contrast to the behavior on macOS and FreeBSD.
+   static constexpr auto clock_id =
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)
+       CLOCK_MONOTONIC;
+ #elif defined(__APPLE__)
+       CLOCK_UPTIME_RAW;
+diff --git a/Source/Core/VideoCommon/DriverDetails.cpp b/Source/Core/VideoCommon/DriverDetails.cpp
+index f5505a9..fe1a2d2 100644
+--- a/Source/Core/VideoCommon/DriverDetails.cpp
++++ b/Source/Core/VideoCommon/DriverDetails.cpp
+@@ -27,7 +27,10 @@ struct BugInfo
+ };
+ 
+ // Local members
+-#ifdef _WIN32
++#ifdef __EMSCRIPTEN__
++// Browser rendering does not expose the host OS's native graphics driver.
++constexpr u32 m_os = OS_ALL;
++#elif defined(_WIN32)
+ constexpr u32 m_os = OS_ALL | OS_WINDOWS;
+ #elif ANDROID
+ constexpr u32 m_os = OS_ALL | OS_ANDROID;

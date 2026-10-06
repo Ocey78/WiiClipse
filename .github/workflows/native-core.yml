@@ -12,31 +12,77 @@ jobs:
     timeout-minutes: 60
     env:
       EMSCRIPTEN_VERSION: 4.0.23
+      CCACHE_DIR: ${{ github.workspace }}/native/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 2G
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y build-essential cmake ninja-build python3 git pkg-config
+          sudo apt-get install --no-install-recommends -y build-essential cmake ninja-build python3 git pkg-config ccache
+      - name: Restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: native/.ccache
+          key: native-${{ runner.os }}-emscripten-${{ env.EMSCRIPTEN_VERSION }}-${{ github.run_id }}
+          restore-keys: native-${{ runner.os }}-emscripten-${{ env.EMSCRIPTEN_VERSION }}-
       - name: Install pinned Emscripten compiler
         run: |
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
           "$RUNNER_TEMP/emsdk/emsdk" install "$EMSCRIPTEN_VERSION"
           "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION"
       - name: Compile native browser core
+        id: native-compile
         shell: bash
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
           set -o pipefail
           bash native/build-dolphin-wasm.sh 2>&1 | tee native-build.log
-      - name: Upload native build log
+      - name: Retain unverified core for browser diagnostics
+        if: steps.native-compile.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-browser-core-unverified
+          path: public/core/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Verify native host contracts
+        run: |
+          c++ -std=c++17 -I native/.build/dolphin/Source/Core native/tests/software-frame.cpp -o "$RUNNER_TEMP/software-frame-test"
+          "$RUNNER_TEMP/software-frame-test"
+          c++ -std=c++17 -pthread -I native/.build/dolphin/Externals/libretro-common/include -I native/tests/stubs native/tests/browser-boot.cpp -o "$RUNNER_TEMP/browser-boot-test"
+          "$RUNNER_TEMP/browser-boot-test"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: npx playwright install --with-deps chromium
+      - name: Boot original GameCube test program in Chromium
+        env:
+          EXPECT_CORE_READY: '1'
+        run: |
+          set -o pipefail
+          npm run test:browser 2>&1 | tee native-browser-smoke.log
+      - name: Upload native diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-build-log
-          path: native-build.log
+          path: |
+            native-build.log
+            native-browser-smoke.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Save compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: native/.ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Upload compiled core
         uses: actions/upload-artifact@v4
         with:

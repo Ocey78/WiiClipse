@@ -1,0 +1,21 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -773,7 +773,8 @@
+   add_definitions(-DHAVE_CUBEB)
+ endif()
+ 
+-if(NOT ANDROID AND NOT IOS AND NOT WEBOS)
++# Browser controllers arrive through libretro; libusb has no Emscripten OS backend.
++if(NOT ANDROID AND NOT IOS AND NOT WEBOS AND NOT EMSCRIPTEN)
+   dolphin_find_optional_system_library(LibUSB Externals/libusb)
+   add_definitions(-D__LIBUSB__)
+ endif()
+@@ -794,7 +795,7 @@
+ 
+ dolphin_find_optional_system_library(CURL Externals/curl)
+ 
+-if(NOT ANDROID AND NOT IOS)
++if(NOT ANDROID AND NOT IOS AND NOT EMSCRIPTEN)
+   dolphin_find_optional_system_library(HIDAPI Externals/hidapi)
+ endif()
+ 

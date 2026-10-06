@@ -7,7 +7,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
+
+extern "C" bool dolphin_browser_start_game();
 
 namespace
 {
@@ -46,6 +50,41 @@ EM_JS(size_t, WebPostAudio, (const int16_t* data, size_t frames), {
   return Number(frames);
 });
 
+struct PendingWebMessage
+{
+  bool status;
+  int level;
+  std::string text;
+};
+std::mutex s_message_mutex;
+std::deque<PendingWebMessage> s_messages;
+
+void QueueWebMessage(bool status, int level, const char* text)
+{
+  // Native helper threads have their own Emscripten worker message protocol.
+  // Copy their messages and emit them only from the main runtime worker.
+  std::lock_guard<std::mutex> lock(s_message_mutex);
+  if (s_messages.size() == 128)
+    s_messages.pop_front();
+  s_messages.push_back({status, level, text ? text : ""});
+}
+
+void DrainWebMessages()
+{
+  std::deque<PendingWebMessage> messages;
+  {
+    std::lock_guard<std::mutex> lock(s_message_mutex);
+    messages.swap(s_messages);
+  }
+  for (const auto& message : messages)
+  {
+    if (message.status)
+      WebPostStatus(message.text.c_str());
+    else
+      WebPostLog(message.level, message.text.c_str());
+  }
+}
+
 void BrowserLog(enum retro_log_level level, const char* format, ...)
 {
   char buffer[4096]{};
@@ -61,7 +100,7 @@ void BrowserLog(enum retro_log_level level, const char* format, ...)
     web_level = 2;
   else if (level == RETRO_LOG_ERROR)
     web_level = 3;
-  WebPostLog(web_level, buffer);
+  QueueWebMessage(false, web_level, buffer);
 }
 
 const char* GetBrowserOption(const char* key)
@@ -182,14 +221,14 @@ bool BrowserEnvironment(unsigned command, void* data)
   {
     const auto* message = static_cast<const retro_message*>(data);
     if (message && message->msg)
-      WebPostStatus(message->msg);
+      QueueWebMessage(true, 1, message->msg);
     return true;
   }
   case RETRO_ENVIRONMENT_SET_MESSAGE_EXT:
   {
     const auto* message = static_cast<const retro_message_ext*>(data);
     if (message && message->msg)
-      WebPostStatus(message->msg);
+      QueueWebMessage(true, 1, message->msg);
     return true;
   }
   default:
@@ -241,6 +280,14 @@ int16_t BrowserInputState(unsigned port, unsigned device, unsigned index, unsign
 
   if (device == RETRO_DEVICE_ANALOG)
   {
+    if (index == RETRO_DEVICE_INDEX_ANALOG_BUTTON)
+    {
+      if (id == RETRO_DEVICE_ID_JOYPAD_L2)
+        return AxisToRetro(std::max(0.0f, s_axes[4]));
+      if (id == RETRO_DEVICE_ID_JOYPAD_R2)
+        return AxisToRetro(std::max(0.0f, s_axes[5]));
+      return 0;
+    }
     if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT)
       return id == RETRO_DEVICE_ID_ANALOG_X ? AxisToRetro(s_axes[0]) : AxisToRetro(s_axes[1]);
     if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT)
@@ -265,7 +312,6 @@ EMSCRIPTEN_KEEPALIVE int dweb_init()
   retro_set_input_poll(BrowserInputPoll);
   retro_set_input_state(BrowserInputState);
   retro_init();
-  retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
 
   retro_system_info info{};
   retro_get_system_info(&info);
@@ -277,7 +323,8 @@ EMSCRIPTEN_KEEPALIVE int dweb_init()
   }
 
   s_initialized = true;
-  WebPostStatus("Dolphin core initialized");
+  QueueWebMessage(true, 1, "Dolphin core initialized");
+  DrainWebMessages();
   return 1;
 }
 
@@ -301,14 +348,31 @@ EMSCRIPTEN_KEEPALIVE int dweb_load_game(const char* path)
   game.data = nullptr;
   game.size = 0;
   game.meta = nullptr;
-  s_game_loaded = retro_load_game(&game);
-  return s_game_loaded ? 1 : 0;
+  if (!retro_load_game(&game))
+  {
+    DrainWebMessages();
+    return 0;
+  }
+  // Dolphin creates the controller objects during retro_load_game, not retro_init.
+  retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+  // retro_load_game only schedules initialization. Complete it without running
+  // a guest frame before acknowledging the browser's boot request.
+  if (!dolphin_browser_start_game())
+  {
+    retro_unload_game();
+    DrainWebMessages();
+    return 0;
+  }
+  s_game_loaded = true;
+  DrainWebMessages();
+  return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE void dweb_run_frame()
 {
   if (s_initialized && s_game_loaded)
     retro_run();
+  DrainWebMessages();
 }
 
 EMSCRIPTEN_KEEPALIVE void dweb_set_button(int id, int pressed)
@@ -330,6 +394,7 @@ EMSCRIPTEN_KEEPALIVE void dweb_unload_game()
     retro_unload_game();
     s_game_loaded = false;
   }
+  DrainWebMessages();
 }
 
 EMSCRIPTEN_KEEPALIVE void dweb_shutdown()
@@ -339,5 +404,6 @@ EMSCRIPTEN_KEEPALIVE void dweb_shutdown()
   dweb_unload_game();
   retro_deinit();
   s_initialized = false;
+  DrainWebMessages();
 }
 }

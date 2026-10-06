@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createBootProbe } from '../native/tests/boot-probe.mjs';
 
 const playwright = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
@@ -31,23 +32,58 @@ if (!url) {
 }
 
 let browser;
+let page;
+const errors = [];
+const browserLogs = [];
 try {
   browser = await playwright[browserName].launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   const context = await browser.newContext();
-  const page = await context.newPage();
-  const errors = [];
+  const bootProbe = createBootProbe();
+  if (process.env.EXPECT_CORE_READY === '1') {
+    await context.addInitScript(({ samples }) => {
+      const OriginalWorker = window.Worker;
+      window.__bootProbe = { frames: 0, matched: false, lastFrame: null };
+      window.Worker = class extends OriginalWorker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            if (data?.type !== 'video' || !data.buffer) return;
+            const bytes = new Uint8Array(data.buffer);
+            const colors = samples.map(({ x, y }) => {
+              const offset = y * data.pitch + x * 4;
+              return [bytes[offset + 2], bytes[offset + 1], bytes[offset]];
+            });
+            const result = window.__bootProbe;
+            result.frames++;
+            result.lastFrame = { width: data.width, height: data.height, colors };
+            result.matched ||= samples.every((sample, index) =>
+              sample.x < data.width && sample.y < data.height &&
+              ['r', 'g', 'b'].every((channel, c) => Math.abs(colors[index][c] - sample[channel]) <= 35));
+          });
+        }
+      };
+    }, { samples: bootProbe.samples });
+  }
+  page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    browserLogs.push(`${message.type()}: ${message.text()}`);
+    if (browserLogs.length > 100) browserLogs.shift();
+  });
   await page.goto(url);
   await page.waitForFunction(() => {
     const state = document.querySelector('#coreState')?.textContent || '';
     return /not built|ready|unavailable/i.test(state);
-  });
+  }, null, { timeout: process.env.EXPECT_CORE_READY === '1' ? 120000 : 30000 });
   await page.waitForFunction(() => !!navigator.serviceWorker?.controller, null, { timeout: 15000 });
   // One first-visit reload should have made the page isolated before app startup.
   assert.equal(await page.evaluate(() => crossOriginIsolated), true, 'Pages startup must enable cross-origin isolation');
   assert.equal(await page.evaluate(() => typeof SharedArrayBuffer), 'function');
   const coreState = await page.locator('#coreState').textContent();
   assert.match(coreState, /not built|ready/i, 'Worker must either initialize or report the known missing core, not an unrelated startup failure');
+  if (process.env.EXPECT_CORE_READY === '1') {
+    assert.match(coreState, /^Core ready/, 'Native build must initialize the real Dolphin module');
+  }
   assert.equal(await page.locator('#play').isDisabled(), true);
   await page.locator('#gameFile').setInputFiles({ name: 'unsupported.txt', mimeType: 'text/plain', buffer: Buffer.from('not a game') });
   assert.equal(await page.locator('#play').isDisabled(), true);
@@ -60,6 +96,12 @@ try {
   assert.equal(await page.locator('#gameName').textContent(), 'channel.WAD');
   assert.match(await page.locator('#gameMeta').textContent(), /Wii channel \(WAD\)/);
   if (!/ready/i.test(coreState)) assert.equal(await page.locator('#play').isDisabled(), true, 'Selecting WAD must not enable Play without a core');
+  if (process.env.EXPECT_CORE_READY === '1') {
+    await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    console.log(JSON.stringify({ nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
+  }
   await page.reload();
   await page.waitForFunction(() => /not built|ready|unavailable/i.test(document.querySelector('#coreState')?.textContent || ''));
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
@@ -80,6 +122,13 @@ try {
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.deepEqual(errors, [], 'App startup must not throw uncaught errors');
   console.log(JSON.stringify({ browser: browserName, url, coreState, checks: ['first visit', 'isolation', 'SharedArrayBuffer', 'DOL and WAD file selection (no game boot)', 'missing-core guard', 'reload', 'offline shell', 'no uncaught errors'] }));
+} catch (error) {
+  console.error(JSON.stringify({ browser: browserName, url, errors, browserLogs,
+    coreState: await page?.locator('#coreState').textContent({ timeout: 1000 }).catch(() => null),
+    status: await page?.locator('#status').textContent({ timeout: 1000 }).catch(() => null),
+    nativeHomebrewBoot: await page?.evaluate(() => window.__bootProbe).catch(() => null),
+  }));
+  throw error;
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

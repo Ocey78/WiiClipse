@@ -20,7 +20,7 @@
  if(ENABLE_VULKAN)
    target_sources(dolphin_libretro PRIVATE
      Vulkan.cpp
-@@ -27,6 +33,30 @@
+@@ -27,6 +33,33 @@
  set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
  
  set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
@@ -37,7 +37,10 @@
 +    "-sALLOW_MEMORY_GROWTH=1"
 +    "-sINITIAL_MEMORY=268435456"
 +    "-sMAXIMUM_MEMORY=2147483648"
-+    "-sPTHREAD_POOL_SIZE=1"
++    # DVD, resources, input scanning, saves, and Wii services still use threads
++    # in single-core mode. Fail on exhaustion instead of blocking on a new worker.
++    "-sPTHREAD_POOL_SIZE=24"
++    "-sPTHREAD_POOL_SIZE_STRICT=2"
 +    "-sFORCE_FILESYSTEM=1"
 +    "-sUSE_WEBGL2=1"
 +    "-sFULL_ES3=1"

@@ -28,10 +28,14 @@ git -C "$SOURCE_DIR" fetch --depth 1 origin "$DOLPHIN_COMMIT"
 git -C "$SOURCE_DIR" checkout --force --detach "$DOLPHIN_COMMIT"
 git -C "$SOURCE_DIR" clean -fdx
 git -C "$SOURCE_DIR" submodule sync --recursive
-git -C "$SOURCE_DIR" submodule update --init --recursive --depth 1 --jobs 8
+git -C "$SOURCE_DIR" submodule update --init --force --recursive --depth 1 --jobs 8
+# Numbered patches also adapt pinned dependencies inside this disposable build clone.
+git -C "$SOURCE_DIR" submodule foreach --recursive 'git clean -fdx'
 
 cp "$NATIVE_DIR/BrowserHost.cpp" "$SOURCE_DIR/Source/Core/DolphinLibretro/BrowserHost.cpp"
-git -C "$SOURCE_DIR" apply "$NATIVE_DIR/patches/0001-dolphin-web-emscripten.patch"
+for patch in "$NATIVE_DIR"/patches/[0-9][0-9][0-9][0-9]-*.patch; do
+  git -C "$SOURCE_DIR" apply "$patch"
+done
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -60,6 +64,7 @@ emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DENABLE_AUTOUPDATE=OFF \
   -DENABLE_ANALYTICS=OFF \
   -DENABLE_LTO=OFF \
+  -DENABLE_CCACHE=ON \
   -DUSE_UPNP=OFF \
   -DUSE_MGBA=OFF \
   -DUSE_RETRO_ACHIEVEMENTS=OFF \

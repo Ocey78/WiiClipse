@@ -1,0 +1,203 @@
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index 0efcece..633933a 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -485,9 +485,11 @@ static void FifoPlayerThread(Core::System& system, const std::optional<std::stri
+ 
+     AsyncRequests::GetInstance()->SetPassthrough(!system.IsDualCoreMode());
+ 
+-#ifdef __LIBRETRO__
++#if defined(__LIBRETRO__) && !defined(__EMSCRIPTEN__)
+     return true;
+ #else
++    // The browser software backend receives no libretro HW context reset;
++    // initialize it here with the rest of the single-core emulation state.
+     // Must happen on the proper thread for some video backends, e.g. OpenGL.
+     return g_video_backend->Initialize(wsi);
+ #endif
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index cd8753b..eb06b7f 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -260,6 +260,8 @@ void retro_run(void)
+ 
+     Libretro::g_emuthread_launched = true;
+ 
++#ifndef __EMSCRIPTEN__
++    // Emscripten installs its software presenter during backend initialization.
+     if(Config::Get(Config::MAIN_GFX_BACKEND) == "Software Renderer")
+     {
+       g_gfx.reset();
+@@ -270,6 +272,7 @@ void retro_run(void)
+       g_gfx.reset();
+       g_gfx = std::make_unique<Libretro::Video::NullGfx>();
+     }
++#endif
+ 
+     while (!Core::IsRunningOrStarting(system))
+       Common::SleepCurrentThread(100);
+diff --git a/Source/Core/DolphinLibretro/Video.h b/Source/Core/DolphinLibretro/Video.h
+index 8df1a7e..3fa77bb 100644
+--- a/Source/Core/DolphinLibretro/Video.h
++++ b/Source/Core/DolphinLibretro/Video.h
+@@ -3,6 +3,9 @@
+ #include <libretro.h>
+ #include "DolphinLibretro/Common/Globals.h"
+ #include "DolphinLibretro/Common/Options.h"
++#ifdef __EMSCRIPTEN__
++#include "DolphinLibretro/SoftwareFrame.h"
++#endif
+ #include "VideoBackends/Null/NullGfx.h"
+ #include "VideoBackends/Software/SWOGLWindow.h"
+ #include "VideoBackends/Software/SWGfx.h"
+@@ -46,14 +49,35 @@ void ContextDestroy(void);
+ class SWGfx : public SW::SWGfx
+ {
+ public:
++#ifdef __EMSCRIPTEN__
++  // The browser presents the CPU framebuffer on the main thread. It has no
++  // libretro OpenGL context or SWOGLWindow on the emulation worker.
++  SWGfx() : SW::SWGfx(nullptr) {}
++  bool IsHeadless() const override { return false; }
++  bool BindBackbuffer(const ClearColor& = {}) override { return true; }
++  SurfaceInfo GetSurfaceInfo() const override
++  {
++    return {EFB_WIDTH, EFB_HEIGHT, 1.0f, AbstractTextureFormat::RGBA8};
++  }
++#else
+   SWGfx()
+     : SW::SWGfx(SWOGLWindow::Create(
+             WindowSystemInfo(WindowSystemType::Libretro, nullptr, nullptr, nullptr)))
+   {
+   }
++#endif
+   void ShowImage(const AbstractTexture* source_texture,
+                  const MathUtil::Rectangle<int>& source_rc) override
+   {
++#ifdef __EMSCRIPTEN__
++    if (m_frame.CopyRGBA(static_cast<const SW::SWTexture*>(source_texture)->GetData(0, 0),
++                         source_texture->GetWidth(), source_texture->GetHeight(),
++                         source_rc.left, source_rc.top, source_rc.right, source_rc.bottom))
++    {
++      video_cb(m_frame.pixels.data(), m_frame.width, m_frame.height,
++               static_cast<size_t>(m_frame.width) * sizeof(u32));
++    }
++#else
+     SW::SWGfx::ShowImage(source_texture, source_rc);
+     video_cb(
+       static_cast<const SW::SWTexture*>(source_texture)->GetData(0, 0),
+@@ -61,8 +85,13 @@ public:
+       source_rc.GetHeight(),
+       source_texture->GetWidth() * 4
+     );
++#endif
+     UpdateActiveConfig();
+   }
++#ifdef __EMSCRIPTEN__
++private:
++  SoftwareFrame m_frame;
++#endif
+ };
+ 
+ class NullGfx : public Null::NullGfx
+diff --git a/Source/Core/VideoBackends/Software/SWmain.cpp b/Source/Core/VideoBackends/Software/SWmain.cpp
+index 66c96f5..cdf4041 100644
+--- a/Source/Core/VideoBackends/Software/SWmain.cpp
++++ b/Source/Core/VideoBackends/Software/SWmain.cpp
+@@ -22,6 +22,11 @@
+ #include "VideoCommon/VideoCommon.h"
+ #include "VideoCommon/VideoConfig.h"
+ 
++#if defined(__LIBRETRO__) && defined(__EMSCRIPTEN__)
++#include "DolphinLibretro/Video.h"
++#include "DolphinLibretro/VideoContexts/ContextStatus.h"
++#endif
++
+ namespace SW
+ {
+ class PerfQuery : public PerfQueryBase
+@@ -91,17 +96,32 @@ void VideoSoftware::InitBackendInfo(const WindowSystemInfo& wsi)
+ 
+ bool VideoSoftware::Initialize(const WindowSystemInfo& wsi)
+ {
++#if !defined(__LIBRETRO__) || !defined(__EMSCRIPTEN__)
+   std::unique_ptr<SWOGLWindow> window = SWOGLWindow::Create(wsi);
+   if (!window)
+     return false;
++#endif
+ 
+   Clipper::Init();
+   Rasterizer::Init();
+ 
++#if defined(__LIBRETRO__) && defined(__EMSCRIPTEN__)
++  const bool initialized = InitializeShared(std::make_unique<Libretro::Video::SWGfx>(),
++                          std::make_unique<SWVertexLoader>(), std::make_unique<PerfQuery>(),
++                          std::make_unique<SWBoundingBox>(), std::make_unique<SWEFBInterface>(),
++                          std::make_unique<TextureCache>());
++  if (initialized)
++  {
++    g_context_status.MarkReset();
++    g_context_status.MarkInitialized();
++  }
++  return initialized;
++#else
+   return InitializeShared(std::make_unique<SWGfx>(std::move(window)),
+                           std::make_unique<SWVertexLoader>(), std::make_unique<PerfQuery>(),
+                           std::make_unique<SWBoundingBox>(), std::make_unique<SWEFBInterface>(),
+                           std::make_unique<TextureCache>());
++#endif
+ }
+ 
+ void VideoSoftware::Shutdown()
+diff --git a/Source/Core/DolphinLibretro/SoftwareFrame.h b/Source/Core/DolphinLibretro/SoftwareFrame.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/DolphinLibretro/SoftwareFrame.h
+@@ -0,0 +1,47 @@
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace Libretro::Video
++{
++struct SoftwareFrame
++{
++  unsigned width = 0;
++  unsigned height = 0;
++  std::vector<std::uint32_t> pixels;
++
++  // SWTexture stores RGBA bytes. Libretro XRGB8888 is the integer 0xXXRRGGBB,
++  // which is B,G,R,X in WebAssembly's little-endian memory.
++  bool CopyRGBA(const std::uint8_t* source, unsigned source_width, unsigned source_height,
++                int left, int top, int right, int bottom)
++  {
++    if (!source || !source_width || !source_height)
++      return false;
++    left = std::clamp(left, 0, static_cast<int>(source_width));
++    top = std::clamp(top, 0, static_cast<int>(source_height));
++    right = std::clamp(right, 0, static_cast<int>(source_width));
++    bottom = std::clamp(bottom, 0, static_cast<int>(source_height));
++    if (left >= right || top >= bottom)
++      return false;
++
++    width = static_cast<unsigned>(right - left);
++    height = static_cast<unsigned>(bottom - top);
++    pixels.resize(static_cast<std::size_t>(width) * height);
++    for (unsigned y = 0; y < height; ++y)
++    {
++      const auto* row = source +
++          (static_cast<std::size_t>(top + y) * source_width + left) * 4;
++      auto* output = pixels.data() + static_cast<std::size_t>(y) * width;
++      for (unsigned x = 0; x < width; ++x)
++      {
++        output[x] = 0xff000000u | (std::uint32_t{row[x * 4]} << 16) |
++                    (std::uint32_t{row[x * 4 + 1]} << 8) | row[x * 4 + 2];
++      }
++    }
++    return true;
++  }
++};
++}  // namespace Libretro::Video

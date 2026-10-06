@@ -1,0 +1,165 @@
+diff --git a/Source/Core/DolphinLibretro/Main.cpp b/Source/Core/DolphinLibretro/Main.cpp
+index eb06b7f..0d473b3 100644
+--- a/Source/Core/DolphinLibretro/Main.cpp
++++ b/Source/Core/DolphinLibretro/Main.cpp
+@@ -203,44 +203,9 @@ void retro_reset(void)
+   Core::System::GetInstance().GetProcessorInterface().ResetButton_Tap();
+ }
+ 
+-void retro_run(void)
++static bool StartEmulation()
+ {
+-  Libretro::Input::InitSensors();
+-  Libretro::Options::CheckForUpdatedVariables();
+-  Libretro::FrameTiming::CheckForFastForwarding();
+-  if (Libretro::Options::IsUpdated(Libretro::Options::main_interface::LOG_LEVEL))
+-  {
+-#if defined(_DEBUG)
+-    Common::Log::LogManager::GetInstance()->SetConfigLogLevel(Common::Log::LogLevel::LDEBUG);
+-#else
+-    Common::Log::LogManager::GetInstance()->SetConfigLogLevel(
+-      static_cast<Common::Log::LogLevel>(
+-        Libretro::Options::GetCached<int>(
+-          Libretro::Options::main_interface::LOG_LEVEL, static_cast<int>(Common::Log::LogLevel::LINFO))));
+-#endif
+-  }
+-
+-  if (Libretro::Options::IsUpdated(Libretro::Options::core::CPU_CLOCK_RATE))
+-  {
+-    double cpuClock = Libretro::Options::GetCached<double>(
+-      Libretro::Options::core::CPU_CLOCK_RATE);
+-    Config::SetCurrent(Config::MAIN_OVERCLOCK, cpuClock);
+-    Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, cpuClock != 1.0);
+-  }
+-
+-  if (Libretro::Options::IsUpdated(Libretro::Options::gfx_settings::WIDESCREEN_HACK))
+-  {
+-    g_Config.bWidescreenHack = Libretro::Options::GetCached<bool>(
+-      Libretro::Options::gfx_settings::WIDESCREEN_HACK);
+-  }
+-
+-  // Crop to 4:3 when advertising 480-line geometry (NTSC / PAL60), tracked per frame.
+-  g_Config.bCropToAspectRatio = (Libretro::Video::GetAdjustedBaseHeight() == 480);
+-
+-  Libretro::Input::Update();
+-
+   Core::System& system = Core::System::GetInstance();
+-
+   if (Core::GetState(system) == Core::State::Starting &&
+       !Libretro::g_emuthread_launched)
+   {
+@@ -258,6 +223,15 @@ void retro_run(void)
+     else
+       Core::EmuThread(system, std::move(Core::g_boot_params), wsi);
+ 
++#ifdef __EMSCRIPTEN__
++    // Single-core EmuThread returns after initialization. An early return on a
++    // boot error has already unwound its guards and changed the state to stopped.
++    if (!Core::IsRunning(system))
++    {
++      ERROR_LOG_FMT(BOOT, "Browser core initialization failed");
++      return false;
++    }
++#endif
+     Libretro::g_emuthread_launched = true;
+ 
+ #ifndef __EMSCRIPTEN__
+@@ -274,8 +248,10 @@ void retro_run(void)
+     }
+ #endif
+ 
++#ifndef __EMSCRIPTEN__
+     while (!Core::IsRunningOrStarting(system))
+       Common::SleepCurrentThread(100);
++#endif
+ 
+     Libretro::g_core_refresh_rate = system.GetVideoInterface().GetTargetRefreshRate();
+     Libretro::s_refresh_rate_settled = false;
+@@ -309,6 +285,59 @@ void retro_run(void)
+     }
+   }
+ 
++  return Libretro::g_emuthread_launched;
++}
++
++#ifdef __EMSCRIPTEN__
++bool dolphin_browser_start_game()
++{
++  // Initializing the core must not execute a guest frame; that can take an
++  // unbounded amount of guest time for a program which has not configured VI.
++  return StartEmulation() && Core::IsRunning(Core::System::GetInstance());
++}
++#endif
++
++void retro_run(void)
++{
++  Libretro::Input::InitSensors();
++  Libretro::Options::CheckForUpdatedVariables();
++  Libretro::FrameTiming::CheckForFastForwarding();
++  if (Libretro::Options::IsUpdated(Libretro::Options::main_interface::LOG_LEVEL))
++  {
++#if defined(_DEBUG)
++    Common::Log::LogManager::GetInstance()->SetConfigLogLevel(Common::Log::LogLevel::LDEBUG);
++#else
++    Common::Log::LogManager::GetInstance()->SetConfigLogLevel(
++      static_cast<Common::Log::LogLevel>(
++        Libretro::Options::GetCached<int>(
++          Libretro::Options::main_interface::LOG_LEVEL, static_cast<int>(Common::Log::LogLevel::LINFO))));
++#endif
++  }
++
++  if (Libretro::Options::IsUpdated(Libretro::Options::core::CPU_CLOCK_RATE))
++  {
++    double cpuClock = Libretro::Options::GetCached<double>(
++      Libretro::Options::core::CPU_CLOCK_RATE);
++    Config::SetCurrent(Config::MAIN_OVERCLOCK, cpuClock);
++    Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, cpuClock != 1.0);
++  }
++
++  if (Libretro::Options::IsUpdated(Libretro::Options::gfx_settings::WIDESCREEN_HACK))
++  {
++    g_Config.bWidescreenHack = Libretro::Options::GetCached<bool>(
++      Libretro::Options::gfx_settings::WIDESCREEN_HACK);
++  }
++
++  // Crop to 4:3 when advertising 480-line geometry (NTSC / PAL60), tracked per frame.
++  g_Config.bCropToAspectRatio = (Libretro::Video::GetAdjustedBaseHeight() == 480);
++
++  Libretro::Input::Update();
++
++  Core::System& system = Core::System::GetInstance();
++
++  if (!StartEmulation())
++    return;
++
+   if(!Libretro::g_emuthread_launched)
+   {
+     DEBUG_LOG_FMT(BOOT, "retro_run() - waiting for g_emuthread_launched");
+diff --git a/Source/Core/DolphinLibretro/Boot.cpp b/Source/Core/DolphinLibretro/Boot.cpp
+index 1bdc2f2..e89f116 100644
+--- a/Source/Core/DolphinLibretro/Boot.cpp
++++ b/Source/Core/DolphinLibretro/Boot.cpp
+@@ -796,11 +796,23 @@ void retro_unload_game(void)
+     Core::Shutdown(system);
+   }
+ 
++#ifdef __EMSCRIPTEN__
++  // Early browser boot failures may occur before video/FIFO initialization.
++  // EmuThread has already unwound HW state; only tear down completed video setup.
++  if (g_context_status.IsInitialized())
++  {
++    if (g_video_backend)
++      g_video_backend->Shutdown();
++    system.GetFifo().Shutdown();
++  }
++  Libretro::g_emuthread_launched = false;
++#else
+   if (!g_context_status.IsDestroyed() && g_video_backend)
+     g_video_backend->Shutdown();
+ 
+   // these are disabled in Shutdown on fullscreen/window toggle
+   system.GetFifo().Shutdown();
++#endif
+ 
+   // Rest of shutdown
+   g_context_status.MarkUnitialized();

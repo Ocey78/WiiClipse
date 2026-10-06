@@ -2,7 +2,7 @@
 
 This directory contains an experimental Emscripten build and browser host for the maintained `libretro/dolphin` frontend. It has not yet produced a verified browser emulator core. A successful web build or frontend test run does not establish that GameCube or Wii software can boot.
 
-The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The patch has been checked against that exact commit. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These settings are intended for a browser port; they are not proof of iOS or game compatibility.
+The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The patches have been checked against that exact commit. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These settings are intended for a browser port; they are not proof of iOS or game compatibility.
 
 ## Prerequisites
 
@@ -38,11 +38,12 @@ The included Node server sends those headers plus `Cross-Origin-Resource-Policy:
 
 ## Current milestone
 
-The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and initial Dolphin build patch are implemented. The native tests currently check source structure, not compiled execution. The **Build experimental Dolphin core** GitHub Actions workflow can be run manually; it pins Emscripten 4.0.23, retains the build log, and uploads core files only if compilation succeeds. It does not publish a site or certify game boot.
+The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and browser patches are implemented. The software renderer presents pixels without a desktop OpenGL window. Game loading checks native startup and returns an error if initialization fails; stopping a game resets the native startup state for another load. Host-compiled tests exercise frame conversion and the browser-host boot contract. These tests do not execute the emulator.
 
-Source inspection at the pinned revision found additional porting work beyond the existing CMake patch:
+The **Build experimental Dolphin core** GitHub Actions workflow can be run manually. It pins Emscripten 4.0.23 and retains compiler and browser logs. A successful compile saves `dolphin-browser-core-unverified` for diagnostics; this artifact must not be deployed without passing the browser check. The separate `dolphin-browser-core` artifact requires compilation, host tests, frontend verification, and browser boot checks to succeed. The browser check requires the compiled module to initialize and render the expected pixels from an original GameCube DOL test program in `native/tests/boot-probe.mjs`. The workflow does not publish a site.
 
-- `Source/Core/DolphinLibretro/Video.h` constructs the software graphics backend with `SWOGLWindow::Create`. That path still uses the libretro OpenGL context, whose initialization requires a hardware-context reset. The browser host currently rejects hardware rendering and does not supply that reset. The software presentation path therefore needs browser-specific implementation and execution tests.
-- `Source/Core/Common/CMakeLists.txt` selects `MemArenaUnix.cpp` for Emscripten. This uses `shm_open`, `mmap`, and mapping protection; disabling fastmem does not remove the physical-memory allocation path. Its browser behavior remains unverified.
+The pinned Emscripten runtime supplies `/dev/shm` through MEMFS. With fastmem disabled, the Cached Interpreter uses nonoverlapping physical-memory views and direct RAM pointers; wasm32 also skips the 64-bit JIT memory arena. These source checks do not establish a memory-port blocker. Real boot and memory-use tests are still needed.
 
-Completion requires a successful native build, loading that module in a cross-origin-isolated browser, and a real boot test with a suitable homebrew or user-provided game, including audio, video, input, and stop/restart. No compiled core or game-boot result is claimed by this scaffold.
+The pinned upstream libretro core accepts Wii `.wad` packages. Its WAD boot path installs the package into the emulated NAND and launches its title. The browser's persistent save mount includes that NAND under `/dolphin/save/User/Wii`. Invalid packages and packages without a bootable title can fail to load. This source-level support does not establish browser compatibility for an individual Wii title.
+
+Completion still requires a successful native build and browser boot run. Broader compatibility also needs suitable homebrew or user-provided games covering audio, input, Wii WAD loading, and stop/restart. No compiled core or game-boot result is claimed yet.
