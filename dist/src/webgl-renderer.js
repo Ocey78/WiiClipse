@@ -10,10 +10,11 @@ const FRAGMENT_SHADER = `#version 300 es
 precision highp float;
 uniform sampler2D uFrame;
 uniform bool uRGBA;
+uniform vec3 uTextureTransform;
 in vec2 vTexCoord;
 out vec4 outColor;
 void main() {
-  vec4 pixel = texture(uFrame, vTexCoord);
+  vec4 pixel = texture(uFrame, vTexCoord * uTextureTransform.xy + vec2(0.0, uTextureTransform.z));
   outColor = vec4(uRGBA ? pixel.rgb : pixel.bgr, 1.0);
 }`;
 
@@ -45,6 +46,9 @@ export class WebGLRenderer {
     this.frameHeight = 0;
     this.unpackRowLength = 0;
     this.isRGBA = false;
+    this.textureScaleX = 1;
+    this.textureScaleY = 1;
+    this.textureOffsetY = 0;
     this.stagingPixels = null;
     this.sizeDirty = true;
     this.resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
@@ -88,6 +92,8 @@ export class WebGLRenderer {
     gl.useProgram(this.program);
     gl.uniform1i(gl.getUniformLocation(this.program, 'uFrame'), 0);
     this.formatUniform = gl.getUniformLocation(this.program, 'uRGBA');
+    this.transformUniform = gl.getUniformLocation(this.program, 'uTextureTransform');
+    gl.uniform3f(this.transformUniform, 1, 1, 0);
   }
 
   resize() {
@@ -118,7 +124,8 @@ export class WebGLRenderer {
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
   }
 
-  presentXRGB8888({ buffer, width, height, pitch, pixelFormat }) {
+  presentXRGB8888({ buffer, width, height, pitch, pixelFormat, bitmap, sourceHeight }) {
+    if (bitmap) return this.presentImageBitmap({ bitmap, width, height, sourceHeight });
     if (!buffer || !width || !height) return;
     const gl = this.gl;
     this.#resizeIfNeeded();
@@ -154,11 +161,49 @@ export class WebGLRenderer {
     } else {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     }
+    this.#draw(pixelFormat === 'RGBA8888');
+  }
+
+  presentImageBitmap({ bitmap, width, height, sourceHeight = bitmap?.height }) {
+    if (!bitmap) return;
+    try {
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
+          width > bitmap.width || height > bitmap.height || sourceHeight !== bitmap.height) return;
+      const gl = this.gl;
+      this.#resizeIfNeeded();
+      if (this.unpackRowLength !== 0) {
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+        this.unpackRowLength = 0;
+      }
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      if (this.frameWidth !== bitmap.width || this.frameHeight !== bitmap.height) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+        this.frameWidth = bitmap.width;
+        this.frameHeight = bitmap.height;
+      } else {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+      }
+      // Native GL draws into the lower-left of its fixed surface. ImageBitmap
+      // uses a top-left origin, so discard the unused top rows in texture UVs.
+      this.#draw(true, width / bitmap.width, height / bitmap.height, (bitmap.height - height) / bitmap.height);
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  #draw(isRGBA, scaleX = 1, scaleY = 1, offsetY = 0) {
+    const gl = this.gl;
     gl.useProgram(this.program);
-    const isRGBA = pixelFormat === 'RGBA8888';
     if (isRGBA !== this.isRGBA) {
       gl.uniform1i(this.formatUniform, isRGBA ? 1 : 0);
       this.isRGBA = isRGBA;
+    }
+    if (this.textureScaleX !== scaleX || this.textureScaleY !== scaleY || this.textureOffsetY !== offsetY) {
+      gl.uniform3f(this.transformUniform, scaleX, scaleY, offsetY);
+      this.textureScaleX = scaleX;
+      this.textureScaleY = scaleY;
+      this.textureOffsetY = offsetY;
     }
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

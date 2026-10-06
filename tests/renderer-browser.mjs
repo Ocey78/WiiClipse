@@ -31,8 +31,8 @@ try {
     document.body.append(canvas);
     const renderer = new WebGLRenderer(canvas);
     const gl = renderer.gl;
-    const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [0, 255, 255], [255, 0, 255], [255, 255, 0]];
-    const expected = [0, 255, 255, 255, 255, 0, 255, 255, 255, 255, 0, 255,
+    const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [0, 128, 255], [255, 64, 255], [255, 255, 32]];
+    const expected = [0, 128, 255, 255, 255, 64, 255, 255, 255, 255, 32, 255,
       255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]; // readPixels is bottom-up
     const checks = [];
     for (const [pitch, pixelFormat] of [[16, undefined], [12, undefined], [13, undefined], [16, 'RGBA8888'], [12, undefined]]) {
@@ -45,6 +45,36 @@ try {
       if (gl.getError() !== gl.NO_ERROR) throw new Error('WebGL error during pixel check');
       checks.push({ pitch, pixelFormat: pixelFormat || 'legacy XRGB8888' });
     }
+    const bitmapChecks = [];
+    for (const sourceHeight of [4, 4, 3]) {
+      // Reproduce the native lower-left output extent inside a taller GL
+      // surface. The unused top rows must never reach the displayed image.
+      const source = new OffscreenCanvas(3, sourceHeight);
+      const sourceGL = source.getContext('webgl2', { alpha: false });
+      sourceGL.clearColor(0.25, 0.25, 0.25, 1);
+      sourceGL.clear(sourceGL.COLOR_BUFFER_BIT);
+      sourceGL.enable(sourceGL.SCISSOR_TEST);
+      colors.forEach(([r, g, b], i) => {
+        sourceGL.scissor(i % 3, 1 - Math.floor(i / 3), 1, 1);
+        sourceGL.clearColor(r / 255, g / 255, b / 255, 1);
+        sourceGL.clear(sourceGL.COLOR_BUFFER_BIT);
+      });
+      const bitmap = source.transferToImageBitmap();
+      renderer.presentXRGB8888({ bitmap, width: 3, height: 2, sourceHeight, pixelFormat: 'RGBA8888' });
+      if (bitmap.width !== 0 || bitmap.height !== 0) throw new Error('Presented bitmap was not closed');
+      const pixels = new Uint8Array(24);
+      gl.readPixels(0, 0, 3, 2, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (pixels.some((value, i) => value !== expected[i])) throw new Error(`Bitmap crop/orientation mismatch at height${sourceHeight}: ${pixels}`);
+      if (gl.getError() !== gl.NO_ERROR) throw new Error('WebGL error during bitmap check');
+      bitmapChecks.push({ sourceHeight, visibleHeight: 2, closed: true });
+      sourceGL.getExtension('WEBGL_lose_context')?.loseContext();
+    }
+    const legacyAfterBitmap = new Uint8Array(24);
+    colors.forEach(([r, g, b], i) => legacyAfterBitmap.set([b, g, r, 0], i * 4));
+    renderer.presentXRGB8888({ buffer: legacyAfterBitmap.buffer, width: 3, height: 2, pitch: 12 });
+    const restored = new Uint8Array(24);
+    gl.readPixels(0, 0, 3, 2, gl.RGBA, gl.UNSIGNED_BYTE, restored);
+    if (restored.some((value, i) => value !== expected[i])) throw new Error('Bitmap-to-software transition retained crop or channel state');
     canvas.style.cssText = 'width:7px;height:5px';
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const white = new Uint8Array(8).fill(255);
@@ -53,7 +83,7 @@ try {
     const resized = new Uint8Array(7 * 5 * 4);
     gl.readPixels(0, 0, 7, 5, gl.RGBA, gl.UNSIGNED_BYTE, resized);
     if (resized.some(value => value !== 255)) throw new Error('Viewport or texture-size change lost pixels');
-    return { checks, resize: [canvas.width, canvas.height] };
+    return { checks, bitmapChecks, resize: [canvas.width, canvas.height] };
   });
   assert.equal(correctness.checks.length, 5);
   const dprContext = await browser.newContext({ deviceScaleFactor: 3 });

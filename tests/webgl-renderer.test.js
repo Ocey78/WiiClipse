@@ -38,6 +38,7 @@ function setup(t, { observe = true } = {}) {
   const renderer = new WebGLRenderer(canvas);
   return {
     renderer, canvas, calls,
+    failUpload() { methods.set('texImage2D', () => { throw new Error('Upload failed'); }); },
     of: name => calls.filter(call => call.name === name),
     get layoutReads() { return layoutReads; },
     cssSize(w, h) { cssWidth = w; cssHeight = h; resized?.([]); },
@@ -93,6 +94,37 @@ test('RGBA packets switch channel interpretation while untagged legacy frames re
   assert.deepEqual(h.of('uniform1i').filter(({ args }) => args[0] === 'uRGBA')
     .map(({ args }) => args[1]), [1, 0, 1]);
   assert.equal(h.of('texImage2D').length, 1, 'Changing channel format does not recreate texture storage');
+});
+
+test('bitmap frames upload directly, crop the native surface and release ownership', t => {
+  const h = setup(t);
+  let closed = 0;
+  const bitmap = () => ({ width: 640, height: 576, close() { closed++; } });
+  const first = bitmap();
+  h.renderer.presentXRGB8888({ bitmap: first, width: 640, height: 528, sourceHeight: 576 });
+  assert.equal(h.of('texImage2D')[0].args.at(-1), first, 'Upload ImageBitmap without reading pixels');
+  h.renderer.presentXRGB8888({ bitmap: bitmap(), width: 640, height: 480, sourceHeight: 576 });
+  assert.equal(h.of('texImage2D').length, 1, 'Reuse full source-surface storage when only crop changes');
+  assert.equal(h.of('texSubImage2D').length, 1);
+  assert.deepEqual(h.of('uniform3f').slice(-2).map(({ args }) => args.slice(1)), [
+    [1, 528 / 576, 48 / 576], [1, 480 / 576, 96 / 576],
+  ]);
+  h.renderer.presentXRGB8888(frame());
+  assert.deepEqual(h.of('uniform3f').at(-1).args.slice(1), [1, 1, 0], 'Software bytes restore uncropped coordinates');
+  assert.equal(h.of('readPixels').length, 0);
+  assert.equal(closed, 2);
+});
+
+test('bitmap ownership is released for invalid frames and thrown uploads', t => {
+  const h = setup(t);
+  let closed = 0;
+  const bitmap = { width: 2, height: 3, close() { closed++; } };
+  h.renderer.presentXRGB8888({ bitmap, width: 2, height: 4 });
+  assert.equal(closed, 1);
+  assert.equal(h.of('drawArrays').length, 0);
+  h.failUpload();
+  assert.throws(() => h.renderer.presentXRGB8888({ bitmap, width: 2, height: 2 }), /Upload failed/);
+  assert.equal(closed, 2);
 });
 
 test('steady frames avoid layout reads and redundant viewport updates', t => {

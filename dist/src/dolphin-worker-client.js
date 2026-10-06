@@ -57,7 +57,13 @@ export class DolphinWorkerClient {
         this.framePending = false;
         this.callbacks.onFrameDone?.(message);
         break;
-      case 'video': this.callbacks.onVideo?.(message); break;
+      case 'video':
+        if (!this.callbacks.onVideo) message.bitmap?.close();
+        else {
+          try { this.callbacks.onVideo(message); }
+          catch (error) { message.bitmap?.close(); this.#fail(error); }
+        }
+        break;
       case 'audio': this.callbacks.onAudio?.(message); break;
       case 'status': this.callbacks.onStatus?.(message.message || ''); break;
       case 'log': this.callbacks.onLog?.(message); break;

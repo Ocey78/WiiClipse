@@ -78,6 +78,7 @@ async function initialize(options = {}) {
     // Software override supports correctness/performance comparisons on the
     // same CPU core; normal boot negotiates native WebGL2 with a safe fallback.
     dwebRenderer: options.renderer === 'software' ? 'software' : 'hardware',
+    dwebVideo: options.video === 'pixels' ? 'pixels' : 'bitmap',
     // Emscripten's default pthread URL drops import.meta.url's query string.
     mainScriptUrlOrBlob: url,
     locateFile: (path) => coreAssetURL(path, url),

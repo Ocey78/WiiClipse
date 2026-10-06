@@ -17,7 +17,7 @@ function emJs(name, parameters, heap, globals = {}) {
   };
 }
 
-function graphicsContext() {
+function graphicsContext({ bitmap = false, canvasHeight = 576 } = {}) {
   const constants = ['READ_FRAMEBUFFER', 'READ_FRAMEBUFFER_BINDING', 'PIXEL_PACK_BUFFER',
     'PIXEL_PACK_BUFFER_BINDING', 'PACK_ALIGNMENT', 'PACK_ROW_LENGTH', 'PACK_SKIP_ROWS',
     'PACK_SKIP_PIXELS', 'RGBA', 'UNSIGNED_BYTE'];
@@ -27,6 +27,15 @@ function graphicsContext() {
     [gl.PACK_ALIGNMENT, 8], [gl.PACK_ROW_LENGTH, 1024], [gl.PACK_SKIP_ROWS, 7], [gl.PACK_SKIP_PIXELS, 3]]);
   const state = new Map(original);
   let reads = 0;
+  const bitmaps = [];
+  gl.canvas = { width: 640, height: canvasHeight };
+  if (bitmap) gl.canvas.transferToImageBitmap = function () {
+    assert.equal(this, gl.canvas, 'canvas method keeps its required receiver');
+    const image = { width: this.width, height: this.height, closed: false,
+      close() { this.closed = true; } };
+    bitmaps.push(image);
+    return image;
+  };
   gl.getParameter = key => state.get(key);
   gl.bindFramebuffer = (target, framebuffer) => {
     assert.equal(target, gl.READ_FRAMEBUFFER);
@@ -48,16 +57,43 @@ function graphicsContext() {
     // Distinct channels and rows expose both accidental swizzling and incomplete flips.
     for (let i = 0; i < pixels.length; i++) pixels[i] = i + 1;
   };
-  return { gl, state, original, reads: () => reads };
+  return { gl, state, original, bitmaps, reads: () => reads };
 }
 
-test('actual hardware host boundary flips GL rows, preserves RGBA, and restores Dolphin pack state', () => {
-  for (const height of [1, 2, 3]) {
-    const context = graphicsContext();
+test('actual hardware host boundary transfers bitmap ownership without readback or GL state changes', () => {
+  for (const canvasHeight of [528, 576]) {
+    const context = graphicsContext({ bitmap: true, canvasHeight });
+    // Even querying GL state can synchronize browser/GPU work. The bitmap path
+    // must not perform the fallback's queries, bindings, packing, or reads.
+    for (const method of ['getParameter', 'bindFramebuffer', 'bindBuffer', 'pixelStorei', 'readPixels'])
+      context.gl[method] = () => assert.fail(`Bitmap presentation called gl.${method}`);
     const hardware = emJs('WebPostHardwareVideo', ['width', 'height'], new Uint8Array(0),
-      { GL: { currentContext: { GLctx: context.gl } } });
+      { GL: { currentContext: { GLctx: context.gl } }, Module: {} });
+    for (const height of [480, 528]) hardware.call(640, height);
+    assert.equal(context.bitmaps.length, 2);
+    assert.equal(hardware.messages.length, 2);
+    assert.notEqual(context.bitmaps[0], context.bitmaps[1], 'each frame owns a new bitmap');
+    for (let i = 0; i < hardware.messages.length; i++) {
+      const { packet, transfer } = hardware.messages[i];
+      assert.deepEqual(packet, { type: 'video', bitmap: context.bitmaps[i], width: 640,
+        height: [480, 528][i], sourceHeight: canvasHeight, pixelFormat: 'RGBA8888' });
+      assert.deepEqual(transfer, [context.bitmaps[i]], 'transfer the bitmap itself, without cloning pixels');
+      assert.equal(context.bitmaps[i].closed, false, 'host must not close the receiver-owned frame');
+    }
+    assert.deepEqual(context.state, context.original);
+  }
+});
+
+test('actual hardware pixel fallbacks flip rows, preserve RGBA, and restore Dolphin pack state', () => {
+  // An absent bitmap API and the explicit pixel override must both retain the
+  // older path, including on browsers which otherwise support bitmaps.
+  for (const bitmap of [false, true]) for (const height of [1, 2, 3]) {
+    const context = graphicsContext({ bitmap });
+    const hardware = emJs('WebPostHardwareVideo', ['width', 'height'], new Uint8Array(0),
+      { GL: { currentContext: { GLctx: context.gl } }, Module: bitmap ? { dwebVideo: 'pixels' } : {} });
     hardware.call(2, height);
     assert.equal(context.reads(), 1);
+    assert.equal(context.bitmaps.length, 0, 'pixel override must avoid transferring the backing canvas');
     assert.deepEqual(context.state, context.original, 'all touched framebuffer/PBO/pixel-store state restored');
     assert.equal(hardware.messages.length, 1);
     const { packet, transfer } = hardware.messages[0];
@@ -71,13 +107,14 @@ test('actual hardware host boundary flips GL rows, preserves RGBA, and restores 
 });
 
 test('actual hardware host boundary rejects missing context and frames outside its backing surface', () => {
-  const context = graphicsContext();
+  const context = graphicsContext({ bitmap: true });
   const GL = { currentContext: { GLctx: context.gl } };
-  const hardware = emJs('WebPostHardwareVideo', ['width', 'height'], new Uint8Array(0), { GL });
+  const hardware = emJs('WebPostHardwareVideo', ['width', 'height'], new Uint8Array(0), { GL, Module: {} });
   for (const [width, height] of [[0, 480], [640, 0], [641, 480], [640, 577]]) hardware.call(width, height);
   GL.currentContext = null;
   hardware.call(640, 480);
   assert.equal(context.reads(), 0);
+  assert.equal(context.bitmaps.length, 0);
   assert.equal(hardware.messages.length, 0);
   assert.deepEqual(context.state, context.original);
 });

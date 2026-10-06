@@ -42,7 +42,10 @@ try {
 } catch (error) { workerStartupError = error; }
 
 const core = worker ? new DolphinWorkerClient(worker, {
-  onVideo: (frame) => renderer?.presentXRGB8888(frame),
+  onVideo: (frame) => {
+    if (renderer) renderer.presentXRGB8888(frame);
+    else frame.bitmap?.close();
+  },
   onAudio: (chunk) => audio.push(chunk),
   onFrameDone: ({ frameRate }) => scheduler?.frameDone(frameRate),
   onStatus: (message) => { if (message) $('#status').textContent = rendererError?.message || message; },

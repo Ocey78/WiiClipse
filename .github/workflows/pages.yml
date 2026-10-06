@@ -51,15 +51,19 @@ jobs:
           SMOKE_BROWSER: webkit
       - name: Verify WebGL pixel uploads and resizing
         run: node tests/renderer-browser.mjs
-      - name: Install Firefox virtual display and software graphics
+      - name: Install Firefox virtual display, graphics, and audio output
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y xvfb xauth libgl1-mesa-dri libegl-mesa0 libglx-mesa0
+          sudo apt-get install --no-install-recommends -y xvfb xauth libgl1-mesa-dri libegl-mesa0 libglx-mesa0 pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=wiiclipse rate=48000 channels=2
+          pactl set-default-sink wiiclipse
       - name: Check Firefox startup and native boot under Xvfb
         env:
           SMOKE_BROWSER: firefox
           SMOKE_HEADED: '1'
           LIBGL_ALWAYS_SOFTWARE: '1'
+          PULSE_SINK: wiiclipse
           EXPECT_CORE_READY: '1'
         run: xvfb-run -a npm run test:browser
       - name: Verify browser audio streaming

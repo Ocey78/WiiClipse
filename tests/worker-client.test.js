@@ -44,6 +44,24 @@ async function readyClient(callbacks) {
   return { worker, client };
 }
 
+test('unhandled GPU images are released and a failing presenter stops frame submission', async () => {
+  let closed = 0;
+  const bitmap = { close() { closed++; } };
+  const unused = await readyClient();
+  unused.worker.emit({ type: 'video', bitmap });
+  assert.equal(closed, 1);
+  const errors = [];
+  const broken = await readyClient({
+    onVideo() { throw new Error('Texture upload failed'); },
+    onError(error) { errors.push(error.message); },
+  });
+  broken.worker.emit({ type: 'video', bitmap });
+  assert.equal(closed, 2);
+  assert.equal(broken.client.isReady(), false);
+  assert.equal(broken.client.runFrame(), false);
+  assert.deepEqual(errors, ['Texture upload failed']);
+});
+
 test('frames wait for confirmed boot and at most one frame is in flight', async () => {
   const { worker, client } = await readyClient();
   const boot = client.bootGame({ name: 'game.iso' });

@@ -91,7 +91,7 @@ index 1a42fb7..a3b8186 100644
  }
  
 diff --git a/Source/Core/VideoBackends/OGL/OGLConfig.cpp b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
-index e20bf10..fa706f7 100644
+index e20bf10..9cc912f 100644
 --- a/Source/Core/VideoBackends/OGL/OGLConfig.cpp
 +++ b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
 @@ -553,6 +553,50 @@ bool PopulateConfig(GLContext* m_main_gl_context)
@@ -157,6 +157,80 @@ index e20bf10..fa706f7 100644
  
    // Program binaries are supported on GL4.1+, ARB_get_program_binary, or ES3.
    if (supports_glsl_cache)
+@@ -740,6 +789,9 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+                               g_ogl_config.gl_renderer, g_ogl_config.gl_version),
+                   5000);
+
++#ifndef __EMSCRIPTEN__
++  // WebGL uses the supported BufferSubData path by design; this native-driver
++  // warning is not actionable in a browser.
+   if (!g_ogl_config.bSupportsGLBufferStorage && !g_ogl_config.bSupportsGLPinnedMemory)
+   {
+     OSD::AddMessage(fmt::format("Your OpenGL driver does not support {}_buffer_storage.",
+@@ -747,6 +799,7 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+                     60000);
+     OSD::AddMessage("This device's performance may be poor.", 60000);
+   }
++#endif
+
+   INFO_LOG_FMT(VIDEO, "Video Info: {}, {}, {}", g_ogl_config.gl_vendor, g_ogl_config.gl_renderer,
+                g_ogl_config.gl_version);
+diff --git a/Source/Core/VideoBackends/OGL/OGLGfx.cpp b/Source/Core/VideoBackends/OGL/OGLGfx.cpp
+index ff5402b..1225268 100644
+--- a/Source/Core/VideoBackends/OGL/OGLGfx.cpp
++++ b/Source/Core/VideoBackends/OGL/OGLGfx.cpp
+@@ -268,6 +268,12 @@ void OGLGfx::SetViewport(float x, float y, float width, float height, float near
+     glViewport(iceilf(x), iceilf(y), iceilf(width), iceilf(height));
+   }
+
++#ifdef __EMSCRIPTEN__
++  // A negative console zRange reverses these endpoints. WebGL rejects that
++  // ordering; VertexShaderManager mirrors clip-space Z for the same viewport.
++  if (near_depth > far_depth)
++    std::swap(near_depth, far_depth);
++#endif
+   glDepthRangef(near_depth, far_depth);
+ }
+
+@@ -387,7 +393,14 @@ void OGLGfx::ClearRegion(const MathUtil::Rectangle<int>& target_rc, bool colorEn
+   if (zEnable)
+   {
+     glDepthMask(zEnable ? GL_TRUE : GL_FALSE);
++#ifdef __EMSCRIPTEN__
++    // WebGL forbids reversed depth ranges. BPFunctions and the generated
++    // shaders therefore store inverted depth, including region clears.
++    const float depth = float(z & 0xFFFFFF) / 16777216.0f;
++    glClearDepthf(g_backend_info.bSupportsReversedDepthRange ? depth : 1.0f - depth);
++#else
+     glClearDepthf(float(z & 0xFFFFFF) / 16777216.0f);
++#endif
+     clear_mask |= GL_DEPTH_BUFFER_BIT;
+   }
+
+@@ -531,12 +544,22 @@ void OGLGfx::ApplyDepthState(const DepthState state)
+
+   const GLenum glCmpFuncs[8] = {GL_NEVER,   GL_LESS,     GL_EQUAL,  GL_LEQUAL,
+                                 GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS};
++#ifdef __EMSCRIPTEN__
++  // Match the inverted depth representation selected by BPFunctions for
++  // backends without reversed depth ranges (also used by Vulkan).
++  const GLenum glInvertedCmpFuncs[8] = {GL_NEVER, GL_GREATER, GL_EQUAL, GL_GEQUAL,
++                                      GL_LESS, GL_NOTEQUAL, GL_LEQUAL, GL_ALWAYS};
++  const GLenum* compare_funcs =
++      g_backend_info.bSupportsReversedDepthRange ? glCmpFuncs : glInvertedCmpFuncs;
++#else
++  const GLenum* compare_funcs = glCmpFuncs;
++#endif
+
+   if (state.test_enable)
+   {
+     glEnable(GL_DEPTH_TEST);
+     glDepthMask(state.update_enable ? GL_TRUE : GL_FALSE);
+-    glDepthFunc(glCmpFuncs[u32(state.func.Value())]);
++    glDepthFunc(compare_funcs[u32(state.func.Value())]);
+   }
+   else
+   {
 diff --git a/Source/Core/VideoBackends/OGL/OGLTexture.cpp b/Source/Core/VideoBackends/OGL/OGLTexture.cpp
 index 003a7ec..f2d2eaf 100644
 --- a/Source/Core/VideoBackends/OGL/OGLTexture.cpp
@@ -307,3 +381,26 @@ index eb574f3..05e608d 100644
  };
  
  class OGLFramebuffer final : public AbstractFramebuffer
+diff --git a/Source/Core/VideoCommon/VertexShaderManager.cpp b/Source/Core/VideoCommon/VertexShaderManager.cpp
+index 6d69803..b3af20c 100644
+--- a/Source/Core/VideoCommon/VertexShaderManager.cpp
++++ b/Source/Core/VideoCommon/VertexShaderManager.cpp
+@@ -359,6 +359,18 @@ void VertexShaderManager::SetConstants(std::span<const std::string> textures,
+     // By default we don't change the depth value at all in the vertex shader.
+     constants.pixelcentercorrection[2] = 1.0f;
+     constants.pixelcentercorrection[3] = 0.0f;
++#ifdef __EMSCRIPTEN__
++    if (g_backend_info.api_type == APIType::OpenGL &&
++        !g_backend_info.bSupportsReversedDepthRange && !g_backend_info.bSupportsDepthClamp &&
++        xfmem.viewport.zRange < 0.0f)
++    {
++      // OGLGfx sorts the depth-range endpoints because WebGL rejects near > far.
++      // Mirror clip-space Z to preserve the console's negative range. Unlike
++      // baking the whole viewport into Z, this preserves both clipping planes.
++      constants.pixelcentercorrection[2] = -1.0f;
++      constants.pixelcentercorrection[3] = 1.0f;
++    }
++#endif
+
+     constants.viewport[0] = (2.f * xfmem.viewport.wd);
+     constants.viewport[1] = (2.f * xfmem.viewport.ht);

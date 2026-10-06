@@ -153,12 +153,13 @@ export function createGxBootProbe({ layers = 8 } = {}) {
     bytes, fileName: 'wiiclipse-gx-probe.dol', width: WIDTH, height: HEIGHT,
     commandBytes, trianglesPerFrame: layers + 2,
     samples: [
-      { x: 32, y: 32, r: 0, g: 0, b: 128 },
+      // Outside both triangles and Dolphin's transient top-left startup OSD.
+      { x: 600, y: 400, r: 0, g: 0, b: 128 },
       { x: 320, y: 120, r: 255, g: 0, b: 0 },
       { x: 320, y: 300, r: 127, g: 0, b: 128 },
     ],
     alternateSamples: [
-      { x: 32, y: 32, r: 0, g: 0, b: 128 },
+      { x: 600, y: 400, r: 0, g: 0, b: 128 },
       { x: 320, y: 120, r: 0, g: 255, b: 0 },
       { x: 320, y: 300, r: 0, g: 127, b: 128 },
     ],

@@ -1,0 +1,36 @@
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -79,6 +79,10 @@
+ 
+ #include "DiscIO/RiivolutionPatcher.h"
+ 
++#ifdef __EMSCRIPTEN__
++#include "DolphinLibretro/VideoContexts/ContextStatus.h"
++#endif
++
+ #include "InputCommon/ControlReference/ControlReference.h"
+ #include "InputCommon/ControllerInterface/ControllerInterface.h"
+ #include "InputCommon/GCAdapter.h"
+@@ -488,10 +492,18 @@
+ #if defined(__LIBRETRO__) && !defined(__EMSCRIPTEN__)
+     return true;
+ #else
+-    // The browser software backend receives no libretro HW context reset;
+-    // initialize it here with the rest of the single-core emulation state.
++    // Browser backends initialize with single-core emulation state. The
++    // frontend context reset only announces that a GL context is current.
+     // Must happen on the proper thread for some video backends, e.g. OpenGL.
+-    return g_video_backend->Initialize(wsi);
++    const bool initialized = g_video_backend->Initialize(wsi);
++#ifdef __EMSCRIPTEN__
++    // retro_unload_game uses this marker to tear down backend/FIFO resources
++    // before the host destroys the GL context. Failed initialization must not
++    // enable that teardown path.
++    if (initialized)
++      g_context_status.MarkInitialized();
++#endif
++    return initialized;
+ #endif
+   };
+ 

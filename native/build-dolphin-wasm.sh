@@ -112,6 +112,11 @@ for artifact in "${artifacts[@]}"; do
   cp "$artifact" "$OUT_DIR/"
 done
 
+# Retain function identities for CPU profiles without adding debug names or
+# changing the deployed Wasm module. This file is a diagnostic artifact only.
+mkdir -p "$ROOT/native-performance"
+find "$BUILD_DIR" -type f -name 'dolphin-core.js.symbols' -exec cp {} "$ROOT/native-performance/" \;
+
 if [[ ! -f "$OUT_DIR/dolphin-core.js" || ! -f "$OUT_DIR/dolphin-core.wasm" ]]; then
   echo "Expected dolphin-core.js and dolphin-core.wasm were not produced." >&2
   exit 1

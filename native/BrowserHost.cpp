@@ -57,6 +57,14 @@ EM_JS(void, WebReleaseGraphicsCanvas, (), {
 EM_JS(void, WebPostHardwareVideo, (unsigned width, unsigned height), {
   const gl = GL.currentContext && GL.currentContext.GLctx;
   if (!gl || !width || !height || width > 640 || height > 576) return;
+  if (Module['dwebVideo'] !== 'pixels' && typeof gl.canvas?.transferToImageBitmap === 'function') {
+    // Transfer the GPU image directly. Reading it back into WASM/JS and then
+    // uploading it again stalls Firefox's graphics pipeline every frame.
+    const bitmap = gl.canvas.transferToImageBitmap();
+    self.postMessage({ type: 'video', bitmap, width, height,
+      sourceHeight: gl.canvas.height, pixelFormat: 'RGBA8888' }, [bitmap]);
+    return;
+  }
   // Dolphin owns GL state: save and restore every binding/pixel-store value
   // touched by the host's presentation readback.
   const framebuffer = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);

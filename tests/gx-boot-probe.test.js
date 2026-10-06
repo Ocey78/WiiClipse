@@ -84,7 +84,7 @@ test('alternating geometry colors verify fresh draws and preserve independent de
   assert.deepEqual(firstDraws[0].vertices[0].rgba, [255, 0, 0, 255]);
   assert.deepEqual(firstDraws[1].vertices[0].rgba, [0, 255, 0, 255]);
   assert.deepEqual(probe.samples, [
-    { x: 32, y: 32, r: 0, g: 0, b: 128 },
+    { x: 600, y: 400, r: 0, g: 0, b: 128 },
     { x: 320, y: 120, r: 255, g: 0, b: 0 },
     { x: 320, y: 300, r: 127, g: 0, b: 128 },
   ]);
@@ -99,6 +99,36 @@ test('alternating geometry colors verify fresh draws and preserve independent de
   }
   assert.throws(() => createGxBootProbe({ layers: 0 }), /layers/);
   assert.throws(() => createGxBootProbe({ layers: 1024 }), /layers/);
+});
+
+test('samples remain in distinct geometry regions at native and resized output dimensions', () => {
+  const probe = createGxBootProbe({ layers: 1 });
+  const draws = decodeCommands(commandStreams(probe)[0]).filter(c => c.type === 'triangles');
+  const triangle = draw => draw.vertices.slice(0, 3).map(({ xyz }) => [
+    (xyz[0] + 1) * probe.width / 2, (1 - xyz[1]) * probe.height / 2,
+  ]);
+  const inside = ([x, y], vertices) => {
+    const sides = vertices.map(([ax, ay], i) => {
+      const [bx, by] = vertices[(i + 1) % 3];
+      return (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    });
+    return sides.every(v => v > 0) || sides.every(v => v < 0);
+  };
+  const main = triangle(draws[0]), blend = triangle(draws[2]);
+  for (const [width, height] of [[640, 480], [640, 528], [1280, 1056]]) {
+    const points = probe.samples.map(({ x, y }) => {
+      const px = Math.floor((x + 0.5) * width / probe.width);
+      const py = Math.floor((y + 0.5) * height / probe.height);
+      return [(px + 0.5) * probe.width / width, (py + 0.5) * probe.height / height];
+    });
+    assert.equal(inside(points[0], main), false, 'Navy point is outside the drawn triangles');
+    assert.ok(points[0][1] > 128, 'Background sample avoids the transient startup OSD');
+    assert.equal(inside(points[1], main), true);
+    assert.equal(inside(points[1], blend), false, 'Opaque point independently checks rejected farther white');
+    assert.equal(inside(points[2], blend), true, 'Nearer blue must blend over the opaque triangle');
+    assert.equal(inside([points[1][0], probe.height - points[1][1]], blend), true,
+      'Vertically flipped output must fail the opaque-color sample');
+  }
 });
 
 test('PPC submission loop drains each FIFO and waits for the next field before switching packets', () => {

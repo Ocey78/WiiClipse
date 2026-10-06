@@ -85,11 +85,40 @@ try {
   const context = await browser.newContext();
   const bootProbe = createBootProbe();
   if (process.env.EXPECT_CORE_READY === '1') {
-    await context.addInitScript(({ samples }) => {
+    await context.addInitScript(({ samples, width, height }) => {
       const OriginalWorker = window.Worker;
-      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+      window.__bootProbe = { samples, width, height, frames: 0, matched: false, lastFrame: null };
       window.__bootProbeWorkerCount = 0;
       window.__bootProbeGraphics = { created: 0, drawn: 0 };
+      window.__bootProbeProtocol = { sent: {}, received: {} };
+      window.__bootProbeAudio = [];
+      window.__bootProbeEvents = [];
+      let bitmapReadback;
+      const record = event => {
+        window.__bootProbeEvents.push({ ...event, at: performance.now(), visibility: document.visibilityState });
+        if (window.__bootProbeEvents.length > 40) window.__bootProbeEvents.shift();
+      };
+      document.addEventListener('click', event => {
+        if (event.target.closest?.('#play')) record({ type: 'play-click', trusted: event.isTrusted,
+          activation: navigator.userActivation?.isActive });
+      }, true);
+      document.addEventListener('visibilitychange', () => record({ type: 'visibility' }));
+      const OriginalAudioContext = window.AudioContext;
+      if (OriginalAudioContext) window.AudioContext = class extends OriginalAudioContext {
+        constructor(...args) {
+          super(...args);
+          window.__bootProbeAudio.push(this);
+          record({ type: 'audio-created', state: this.state });
+          this.addEventListener('statechange', () => record({ type: 'audio-state', state: this.state }));
+        }
+        resume(...args) {
+          record({ type: 'audio-resume', state: this.state });
+          const result = super.resume(...args);
+          result.then(() => record({ type: 'audio-resumed', state: this.state }),
+            error => record({ type: 'audio-resume-error', message: String(error) }));
+          return result;
+        }
+      };
       const originalDrawArrays = WebGL2RenderingContext.prototype.drawArrays;
       WebGL2RenderingContext.prototype.drawArrays = function (...args) {
         const output = originalDrawArrays.apply(this, args);
@@ -97,11 +126,11 @@ try {
         if (this.canvas.id === 'screen' && result?.lastFrame) {
           // Read immediately after drawing: the app deliberately does not keep
           // the canvas drawing buffer alive after the browser presents it.
-          const { width, height } = result.lastFrame;
+          const { width, height } = result;
           result.presentedColors = result.samples.map(({ x, y }) => {
             const color = new Uint8Array(4);
-            this.readPixels(Math.floor(x * this.canvas.width / width),
-              this.canvas.height - 1 - Math.floor(y * this.canvas.height / height),
+            this.readPixels(Math.floor((x + 0.5) * this.canvas.width / width),
+              this.canvas.height - 1 - Math.floor((y + 0.5) * this.canvas.height / height),
               1, 1, this.RGBA, this.UNSIGNED_BYTE, color);
             return [...color.subarray(0, 3)];
           });
@@ -111,26 +140,49 @@ try {
         return output;
       };
       window.Worker = class extends OriginalWorker {
+        postMessage(message, ...args) {
+          const counts = window.__bootProbeProtocol.sent;
+          counts[message?.type] = (counts[message?.type] || 0) + 1;
+          return super.postMessage(message, ...args);
+        }
         constructor(...args) {
           super(...args);
           window.__bootProbeWorkerCount++;
           this.addEventListener('message', ({ data }) => {
+            const counts = window.__bootProbeProtocol.received;
+            counts[data?.type] = (counts[data?.type] || 0) + 1;
             if (data?.type === 'smoke-native-gl') {
               window.__bootProbeGraphics[data.state]++;
               return;
             }
-            if (data?.type !== 'video' || !data.buffer) return;
+            if (data?.type !== 'video' || (!data.buffer && !data.bitmap)) return;
             const result = window.__bootProbe;
-            const bytes = new Uint8Array(data.buffer);
+            let bytes;
+            let pitch = data.pitch;
+            if (data.bitmap) {
+              // Test-only readback before the app uploads and closes the bitmap.
+              // Production presentation uploads it directly into WebGL.
+              bitmapReadback ||= new OffscreenCanvas(data.width, data.height);
+              if (bitmapReadback.width !== data.width) bitmapReadback.width = data.width;
+              if (bitmapReadback.height !== data.height) bitmapReadback.height = data.height;
+              const ctx = bitmapReadback.getContext('2d', { willReadFrequently: true });
+              ctx.drawImage(data.bitmap, 0, data.bitmap.height - data.height, data.width, data.height,
+                0, 0, data.width, data.height);
+              bytes = ctx.getImageData(0, 0, data.width, data.height).data;
+              pitch = data.width * 4;
+              result.bitmapFrames = (result.bitmapFrames || 0) + 1;
+            } else bytes = new Uint8Array(data.buffer);
             const colors = result.samples.map(({ x, y }) => {
-              const offset = y * data.pitch + x * 4;
-              const rgba = data.pixelFormat === 'RGBA8888';
+              const px = Math.floor((x + 0.5) * data.width / result.width);
+              const py = Math.floor((y + 0.5) * data.height / result.height);
+              const offset = py * pitch + px * 4;
+              const rgba = !!data.bitmap || data.pixelFormat === 'RGBA8888';
               return [bytes[offset + (rgba ? 0 : 2)], bytes[offset + 1], bytes[offset + (rgba ? 2 : 0)]];
             });
             result.frames++;
             result.lastFrame = { width: data.width, height: data.height, colors };
             const matches = expected => expected.every((sample, index) =>
-              sample.x < data.width && sample.y < data.height &&
+              sample.x < result.width && sample.y < result.height &&
               ['r', 'g', 'b'].every((channel, c) => Math.abs(colors[index][c] - sample[channel]) <= 35));
             const primary = matches(result.samples);
             const alternate = result.alternateSamples && matches(result.alternateSamples);
@@ -144,7 +196,7 @@ try {
           });
         }
       };
-    }, { samples: bootProbe.samples });
+    }, { samples: bootProbe.samples, width: bootProbe.width, height: bootProbe.height });
   }
   page = await context.newPage();
   if (process.env.SMOKE_DEBUG) page.on('console', message => console.log(message.text()));
@@ -154,6 +206,8 @@ try {
     if (browserLogs.length > 100) browserLogs.shift();
   });
   await page.goto(url);
+  await page.bringToFront();
+  await page.waitForFunction(() => document.visibilityState === 'visible', null, { timeout: 15000 });
   if (process.env.SMOKE_DEBUG) console.log('Opened app', url);
   await page.waitForFunction(() => {
     const state = document.querySelector('#coreState')?.textContent || '';
@@ -195,9 +249,9 @@ try {
   if (process.env.EXPECT_CORE_READY === '1') {
     assert.match(await page.locator('#coreState').textContent(), /^Core ready/, 'Native core must initialize after reload');
     const wadProbe = createWadBootProbe();
-    await page.evaluate(samples => {
-      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
-    }, wadProbe.samples);
+    await page.evaluate(({ samples, width, height }) => {
+      window.__bootProbe = { samples, width, height, frames: 0, matched: false, lastFrame: null };
+    }, { samples: wadProbe.samples, width: wadProbe.width, height: wadProbe.height });
     await page.locator('#gameFile').setInputFiles({ name: wadProbe.fileName, mimeType: 'application/octet-stream', buffer: wadProbe.bytes });
     await page.locator('#play').click();
     await page.waitForFunction(() => window.__bootProbe?.matched === true && window.__bootProbe?.presentedMatched === true, null, { timeout: 120000 });
@@ -205,10 +259,10 @@ try {
 
     // Replace the running Wii channel with the original GameCube DOL in the
     // same page and worker. Reversed WAD colors cannot satisfy this new match.
-    const replacementStart = await page.evaluate(samples => {
-      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+    const replacementStart = await page.evaluate(({ samples, width, height }) => {
+      window.__bootProbe = { samples, width, height, frames: 0, matched: false, lastFrame: null };
       return { timeOrigin: performance.timeOrigin, workers: window.__bootProbeWorkerCount };
-    }, bootProbe.samples);
+    }, { samples: bootProbe.samples, width: bootProbe.width, height: bootProbe.height });
     await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
     assert.equal(await page.locator('#play').isDisabled(), false, 'Selecting a different title must allow replacing the running WAD');
     await page.locator('#play').click();
@@ -219,9 +273,9 @@ try {
 
     const gxProbe = createGxBootProbe({ layers: 2 });
     const graphicsBeforeGx = await page.evaluate(() => window.__bootProbeGraphics);
-    await page.evaluate(({ samples, alternateSamples }) => {
-      window.__bootProbe = { samples, alternateSamples, frames: 0, matched: false, lastFrame: null };
-    }, { samples: gxProbe.samples, alternateSamples: gxProbe.alternateSamples });
+    await page.evaluate(({ samples, alternateSamples, width, height }) => {
+      window.__bootProbe = { samples, alternateSamples, width, height, frames: 0, matched: false, lastFrame: null };
+    }, { samples: gxProbe.samples, alternateSamples: gxProbe.alternateSamples, width: gxProbe.width, height: gxProbe.height });
     await page.locator('#gameFile').setInputFiles({ name: gxProbe.fileName, mimeType: 'application/octet-stream', buffer: gxProbe.bytes });
     await page.locator('#play').click();
     await page.waitForFunction(() => window.__bootProbe?.matched && window.__bootProbe?.alternateMatched &&
@@ -231,9 +285,9 @@ try {
     if (expectGPU) assert.ok(graphicsBeforeReplacement.created > graphicsBeforeGx.created && graphicsBeforeReplacement.drawn > graphicsBeforeGx.drawn,
       'The GX probe itself must create and draw through native-worker WebGL');
 
-    await page.evaluate(samples => {
-      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
-    }, bootProbe.samples);
+    await page.evaluate(({ samples, width, height }) => {
+      window.__bootProbe = { samples, width, height, frames: 0, matched: false, lastFrame: null };
+    }, { samples: bootProbe.samples, width: bootProbe.width, height: bootProbe.height });
     await page.locator('#gameFile').setInputFiles({ name: bootProbe.fileName, mimeType: 'application/octet-stream', buffer: bootProbe.bytes });
     await page.locator('#play').click();
     await page.waitForFunction(() => window.__bootProbe?.matched && window.__bootProbe?.presentedMatched, null, { timeout: 120000 });
@@ -270,6 +324,11 @@ try {
     coreState: await page?.locator('#coreState').textContent({ timeout: 1000 }).catch(() => null),
     status: await page?.locator('#status').textContent({ timeout: 1000 }).catch(() => null),
     nativeHomebrewBoot: await page?.evaluate(() => window.__bootProbe).catch(() => null),
+    lifecycle: await page?.evaluate(() => ({ visibility: document.visibilityState, focused: document.hasFocus(),
+      playDisabled: document.querySelector('#play')?.disabled, events: window.__bootProbeEvents,
+      protocol: window.__bootProbeProtocol,
+      audio: window.__bootProbeAudio?.map(audio => ({ state: audio.state, currentTime: audio.currentTime, sampleRate: audio.sampleRate })),
+    })).catch(() => null),
   }));
   throw error;
 } finally {
