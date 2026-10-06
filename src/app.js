@@ -70,7 +70,7 @@ async function initializeCore() {
     const { version } = await core.initialize();
     $('#coreState').textContent = `Core ready • ${version}`;
     $('#coreState').classList.add('ready');
-    $('#status').textContent = rendererError?.message || 'Select a GameCube game or homebrew file.';
+    $('#status').textContent = rendererError?.message || 'Select a GameCube game, homebrew file, or bootable Wii WAD.';
     updatePlayState();
   } catch (error) {
     $('#coreState').textContent = /not installed|not built/i.test(error.message) ? 'Native core not built' : 'Native core unavailable';

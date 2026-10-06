@@ -54,17 +54,32 @@ try {
   await page.locator('#gameFile').setInputFiles({ name: 'homebrew.dol', mimeType: 'application/octet-stream', buffer: Buffer.from('selection test only; not an executable') });
   assert.equal(await page.locator('#gameName').textContent(), 'homebrew.dol');
   if (!/ready/i.test(coreState)) assert.equal(await page.locator('#play').isDisabled(), true, 'Missing core must never enable Play');
+  // This only checks WAD selection and classification; the fixture is never booted.
+  assert.ok((await page.locator('#gameFile').getAttribute('accept')).split(',').includes('.wad'));
+  await page.locator('#gameFile').setInputFiles({ name: 'channel.WAD', mimeType: 'application/octet-stream', buffer: Buffer.from('selection test only; not a Wii channel') });
+  assert.equal(await page.locator('#gameName').textContent(), 'channel.WAD');
+  assert.match(await page.locator('#gameMeta').textContent(), /Wii channel \(WAD\)/);
+  if (!/ready/i.test(coreState)) assert.equal(await page.locator('#play').isDisabled(), true, 'Selecting WAD must not enable Play without a core');
   await page.reload();
   await page.waitForFunction(() => /not built|ready|unavailable/i.test(document.querySelector('#coreState')?.textContent || ''));
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
-  // Give successful asset fetches time to finish their event.waitUntil cache writes.
   await page.evaluate(() => navigator.serviceWorker.ready);
-  await context.setOffline(true);
+  if (server) {
+    // Stop the origin to test real network failure. Playwright's WebKit offline
+    // emulation incorrectly rejects service-worker responses (issue #42775).
+    const closed = new Promise(resolve => server.close(resolve));
+    server.closeAllConnections();
+    await closed;
+    server = null;
+  } else {
+    assert.equal(browserName, 'chromium', 'Remote offline checks currently require Chromium');
+    await context.setOffline(true);
+  }
   await page.reload();
   await page.locator('#chooseGame').waitFor();
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.deepEqual(errors, [], 'App startup must not throw uncaught errors');
-  console.log(JSON.stringify({ browser: browserName, url, coreState, checks: ['first visit', 'isolation', 'SharedArrayBuffer', 'file selection', 'missing-core guard', 'reload', 'offline shell', 'no uncaught errors'] }));
+  console.log(JSON.stringify({ browser: browserName, url, coreState, checks: ['first visit', 'isolation', 'SharedArrayBuffer', 'DOL and WAD file selection (no game boot)', 'missing-core guard', 'reload', 'offline shell', 'no uncaught errors'] }));
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

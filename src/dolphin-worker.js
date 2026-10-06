@@ -112,7 +112,7 @@ self.addEventListener('message', async ({ data = {} }) => {
         if (!adapter?.isReady()) throw new Error('Dolphin core is not initialized.');
         status(`Mounting ${data.file?.name || 'game'}…`);
         const path = await mountGame(data.file);
-        status('Booting GameCube title with cached interpreter…');
+        status('Booting title with cached interpreter…');
         await adapter.bootGamePath(path);
         running = true;
         frameCount = 0;

@@ -4,7 +4,9 @@
 
 The browser app is published automatically after its tests and browser startup checks pass. The native Dolphin core is experimental and is not included in the site yet; opening the site is not a claim that GameCube games can boot.
 
-Dolphin Web is a **client-side** GameCube browser port project targeting Safari on iOS/iPadOS 18+. It uses a PWA frontend, a dedicated Web Worker, Emscripten/WebAssembly, WebGL2 for presentation, WebAudio, browser-local saves, touch controls, and the Gamepad API. There is no remote Dolphin server and no game streaming.
+Dolphin Web is a **client-side** GameCube/Wii browser port project targeting Safari on iOS/iPadOS 18+. It uses a PWA frontend, a dedicated Web Worker, Emscripten/WebAssembly, WebGL2 for presentation, WebAudio, browser-local saves, touch controls, and the Gamepad API. There is no remote Dolphin server and no game streaming.
+
+The file picker accepts GameCube ISO/GCM images, DOL/ELF homebrew, and bootable **Wii WAD channel packages** (not Doom WAD files). Dolphin's WAD boot path installs into the emulated NAND under browser-local save storage before launching the title. File selection does not guarantee title compatibility; actual boot requires the native core.
 
 ## What is implemented
 
