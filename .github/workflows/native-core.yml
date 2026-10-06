@@ -90,3 +90,40 @@ jobs:
           path: public/core/
           if-no-files-found: error
           retention-days: 14
+      - name: Package verified core and corresponding source
+        run: node scripts/package-native-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-native-release
+          path: native-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-native-release
+          path: native-release
+      - name: Publish immutable verified core release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=$(jq -r .tag native-release/native-core-release.json)
+          HOST_COMMIT=$(jq -r .hostCommit native-release/native-core-release.json)
+          gh release create "$TAG" \
+            native-release/dolphin-core.* \
+            native-release/dolphin-browser-source.tar.gz \
+            native-release/native-core-release.json \
+            native-release/SHA256SUMS.txt \
+            --target "$HOST_COMMIT" --prerelease --latest=false \
+            --title "Experimental browser core $TAG" \
+            --notes-file native-release/release-notes.md

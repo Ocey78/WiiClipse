@@ -36,6 +36,38 @@ The core is built with WebAssembly threads because Dolphin's internals use threa
 
 The included Node server sends those headers plus `Cross-Origin-Resource-Policy: same-origin`.
 
+## Deploying a verified core
+
+Core binaries belong in a versioned GitHub release, not in Git. The native workflow must pass its `EXPECT_CORE_READY=1` browser check before publishing them. Publish the exact `dolphin-core.js`, `dolphin-core.wasm`, `dolphin-core.data`, and any generated `dolphin-core.worker.js` or `dolphin-core.<name>.worker.js` files from that successful run. Do not use the `dolphin-browser-core-unverified` diagnostic artifact. Workflow artifacts expire; release assets provide the durable download used by future frontend deployments.
+
+Publish `dolphin-browser-source.tar.gz` alongside the binaries. It should retain the matching patched Dolphin source, recursive dependency source and license files, and the exact browser host, patches, and build instructions. Record the frontend commit, pinned Dolphin commit, Emscripten version, and successful workflow run. Keep this source archive on the release rather than copying it into the deployed site.
+
+After verification and publication, commit the small `native/core-release.json` manifest. Its schema is:
+
+| Field | Value |
+| --- | --- |
+| `schemaVersion` | `1` |
+| `tag` | Exact versioned release tag; letters, digits, dots, underscores, and hyphens only, starting with a letter or digit |
+| `hostCommit`, `dolphinCommit` | Full 40-character source commit hashes |
+| `emscripten` | Exact compiler version, such as `4.0.23` |
+| `runId` | Successful native workflow run ID, as a positive integer or numeric string |
+| `source` | `{ "name": "dolphin-browser-source.tar.gz", "sha256": "<64-character SHA-256>" }` |
+| `files` | Array of `{ "name": "<core asset filename>", "sha256": "<64-character SHA-256>" }` for every generated runtime file |
+
+Do not create the manifest before a real core has passed the boot check. The three JavaScript/WASM/data assets are required; worker assets are optional according to the compiler output. The manifest pins the actual file hashes, not a `latest` release URL or an expiring workflow artifact.
+
+Before the normal frontend build, restore the pinned core with Node 24:
+
+```bash
+node scripts/fetch-core.mjs
+npm run verify
+EXPECT_CORE_READY=1 npm run test:browser
+```
+
+The downloader derives all asset URLs from `https://github.com/Ocey78/WiiClipse/releases/download/<tag>/<name>`. It validates the manifest and streams every runtime file through SHA-256 verification before replacing `public/core/`. A failed download, invalid manifest, or hash mismatch exits unsuccessfully and preserves the previous core directory. The installed `public/core/core-release.json` records provenance and the matching source archive URL; the source archive itself is not downloaded or rehashed by this command.
+
+When the manifest is absent, the downloader explicitly skips release acquisition, makes no requests, and preserves any local native build. This permits the frontend to build before the first verified release exists. Once a manifest is committed, a failed acquisition must stop the Pages job. Run the actual-core browser probe on the assembled `dist/` before uploading the Pages artifact. This keeps later frontend pushes from replacing the site with a build that silently omits its core. Upgrade or roll back by committing the manifest for the chosen verified release.
+
 ## Current milestone
 
 The web frontend, worker, filesystem mounts, audio/video callbacks, input ABI, and browser patches are implemented. The software renderer presents pixels without a desktop OpenGL window. Game loading checks native startup and returns an error if initialization fails; stopping a game resets the native startup state for another load. Host-compiled tests exercise frame conversion and the browser-host boot contract. These tests do not execute the emulator.

@@ -10,7 +10,7 @@ The file picker accepts GameCube ISO/GCM images, DOL/ELF homebrew, and bootable 
 
 ## What is implemented
 
-The web runtime now has a real Dolphin integration boundary built around the maintained `libretro/dolphin` frontend. Selected ISO/GCM/DOL/ELF files are sent to the emulator worker as browser `File` objects and mounted with Emscripten WORKERFS instead of being copied into a giant JavaScript `ArrayBuffer`. The worker mounts persistent saves with IDBFS, forwards controller state into a native C++ frontend, receives XRGB8888 software-rendered frames, sends them to WebGL2, and queues stereo audio through WebAudio.
+The web runtime now has a real Dolphin integration boundary built around the maintained `libretro/dolphin` frontend. Selected ISO/GCM/DOL/ELF/WAD files are sent to the emulator worker as browser `File` objects and mounted with Emscripten WORKERFS instead of being copied into a giant JavaScript `ArrayBuffer`. The worker mounts persistent saves with IDBFS, forwards controller state into a native C++ frontend, receives XRGB8888 software-rendered frames, sends them to WebGL2, and queues stereo audio through WebAudio.
 
 The native browser host forces compatibility-first settings for a normal Safari web app: Dolphin Cached Interpreter, single-core CPU emulation, fastmem disabled, fastmem arena disabled, DSP JIT disabled, 1x EFB, and the Software Renderer. This is intentionally slower than native Dolphin, but it avoids requiring native executable-memory/JIT privileges.
 
@@ -30,6 +30,8 @@ For the browser smoke check, run `npm ci`, `npx playwright install chromium`, th
 
 `.github/workflows/pages.yml` tests and deploys `dist/` whenever `main` changes. The repository's Pages source is **GitHub Actions**. Relative asset paths support the `/WiiClipse/` project URL.
 
+When `native/core-release.json` selects a verified native release, deployments download its exact core files and check their SHA-256 hashes before building. The Chromium check then boots the original four-color DOL probe. A failed download or boot check stops deployment. The native workflow publishes versioned core files and their corresponding source only after that boot check passes; selecting a release is a separate committed change.
+
 The service worker adds the isolation headers required for shared memory on this static host. The first visit may reload once before the app starts. Offline caching covers the app shell; it does not cache game files or the native core. Games remain on your device.
 
 ## Build the real Dolphin WASM core
@@ -41,7 +43,7 @@ Activate an Emscripten SDK, then run:
 npm run build
 ```
 
-The native build pins `libretro/dolphin` to commit `f8603f14e7f5a090e6693857d625a55ea9330534`, applies `native/patches/0001-dolphin-web-emscripten.patch`, injects `native/BrowserHost.cpp`, and writes the resulting Emscripten artifacts to `public/core/`.
+The native build pins `libretro/dolphin` to commit `f8603f14e7f5a090e6693857d625a55ea9330534`, applies the numbered patches in `native/patches/`, injects `native/BrowserHost.cpp`, and writes the resulting Emscripten artifacts to `public/core/`.
 
 See [`native/README.md`](native/README.md) for prerequisites and hosting requirements.
 

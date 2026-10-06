@@ -5,3 +5,7 @@ native/.ccache/
 native-build.log
 test-results/
 playwright-report/
+public/core/
+dist/core/
+native-release/
+native-browser-smoke.log

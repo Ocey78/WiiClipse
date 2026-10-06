@@ -23,9 +23,17 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Fetch pinned verified native core
+        run: node scripts/fetch-core.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium webkit
-      - run: npm run test:browser
+      - name: Check Chromium startup and native boot when available
+        shell: bash
+        run: |
+          if [[ -f native/core-release.json ]]; then
+            export EXPECT_CORE_READY=1
+          fi
+          npm run test:browser
       - name: Check WebKit startup
         run: npm run test:browser
         env:
