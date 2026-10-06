@@ -20,7 +20,7 @@
  if(ENABLE_VULKAN)
    target_sources(dolphin_libretro PRIVATE
      Vulkan.cpp
-@@ -27,6 +33,29 @@
+@@ -27,6 +33,30 @@
  set(LIBRARY_OUTPUT_PATH "${CMAKE_BINARY_DIR}")
  
  set_target_properties(dolphin_libretro PROPERTIES PREFIX "")
@@ -29,6 +29,7 @@
 +  target_compile_options(dolphin_libretro PRIVATE -pthread)
 +  target_link_options(dolphin_libretro PRIVATE
 +    -pthread
++    "--no-entry"
 +    "-sMODULARIZE=1"
 +    "-sEXPORT_ES6=1"
 +    "-sEXPORT_NAME=createDolphinModule"
@@ -40,7 +41,7 @@
 +    "-sFORCE_FILESYSTEM=1"
 +    "-sUSE_WEBGL2=1"
 +    "-sFULL_ES3=1"
-+    "-sEXPORTED_RUNTIME_METHODS=['FS','cwrap']"
++    "-sEXPORTED_RUNTIME_METHODS=['FS','cwrap','IDBFS','WORKERFS']"
 +    "-lworkerfs.js"
 +    "-lidbfs.js"
 +    "--preload-file"

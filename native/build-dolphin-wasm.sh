@@ -20,15 +20,15 @@ done
 
 mkdir -p "$WORK_DIR"
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
-  git clone "$DOLPHIN_REPO" "$SOURCE_DIR"
+  git init "$SOURCE_DIR"
+  git -C "$SOURCE_DIR" remote add origin "$DOLPHIN_REPO"
 fi
 
-git -C "$SOURCE_DIR" fetch --all --tags --prune
-git -C "$SOURCE_DIR" reset --hard
+git -C "$SOURCE_DIR" fetch --depth 1 origin "$DOLPHIN_COMMIT"
+git -C "$SOURCE_DIR" checkout --force --detach "$DOLPHIN_COMMIT"
 git -C "$SOURCE_DIR" clean -fdx
-git -C "$SOURCE_DIR" checkout --detach "$DOLPHIN_COMMIT"
 git -C "$SOURCE_DIR" submodule sync --recursive
-git -C "$SOURCE_DIR" submodule update --init --recursive --jobs 8
+git -C "$SOURCE_DIR" submodule update --init --recursive --depth 1 --jobs 8
 
 cp "$NATIVE_DIR/BrowserHost.cpp" "$SOURCE_DIR/Source/Core/DolphinLibretro/BrowserHost.cpp"
 git -C "$SOURCE_DIR" apply "$NATIVE_DIR/patches/0001-dolphin-web-emscripten.patch"
@@ -39,6 +39,7 @@ mkdir -p "$BUILD_DIR"
 # The full core is built with pthread support because Dolphin's internals use C++
 # threading primitives even though the browser frontend forces single-core CPU emulation.
 emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
+  -DEMSCRIPTEN_SYSTEM_PROCESSOR=wasm32 \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_FLAGS="-pthread" \
   -DCMAKE_CXX_FLAGS="-pthread" \
@@ -66,7 +67,8 @@ emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DENCODE_FRAMEDUMPS=OFF \
   -DUSE_SYSTEM_LIBS=OFF
 
-cmake --build "$BUILD_DIR" --target dolphin_libretro --parallel
+# Collect independent compiler errors in one attempt; do not package partial output.
+cmake --build "$BUILD_DIR" --target dolphin_libretro --parallel -- -k 0
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
