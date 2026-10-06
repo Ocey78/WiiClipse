@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBootProbe } from '../native/tests/boot-probe.mjs';
+import { createWadBootProbe } from '../native/tests/wad-boot-probe.mjs';
 
 const playwright = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
@@ -42,21 +43,21 @@ try {
   if (process.env.EXPECT_CORE_READY === '1') {
     await context.addInitScript(({ samples }) => {
       const OriginalWorker = window.Worker;
-      window.__bootProbe = { frames: 0, matched: false, lastFrame: null };
+      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
       window.Worker = class extends OriginalWorker {
         constructor(...args) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             if (data?.type !== 'video' || !data.buffer) return;
+            const result = window.__bootProbe;
             const bytes = new Uint8Array(data.buffer);
-            const colors = samples.map(({ x, y }) => {
+            const colors = result.samples.map(({ x, y }) => {
               const offset = y * data.pitch + x * 4;
               return [bytes[offset + 2], bytes[offset + 1], bytes[offset]];
             });
-            const result = window.__bootProbe;
             result.frames++;
             result.lastFrame = { width: data.width, height: data.height, colors };
-            result.matched ||= samples.every((sample, index) =>
+            result.matched ||= result.samples.every((sample, index) =>
               sample.x < data.width && sample.y < data.height &&
               ['r', 'g', 'b'].every((channel, c) => Math.abs(colors[index][c] - sample[channel]) <= 35));
           });
@@ -103,8 +104,20 @@ try {
     console.log(JSON.stringify({ nativeHomebrewBoot: await page.evaluate(() => window.__bootProbe) }));
   }
   await page.reload();
-  await page.waitForFunction(() => /not built|ready|unavailable/i.test(document.querySelector('#coreState')?.textContent || ''));
+  await page.waitForFunction(() => /not built|ready|unavailable/i.test(document.querySelector('#coreState')?.textContent || ''), null,
+    { timeout: process.env.EXPECT_CORE_READY === '1' ? 120000 : 30000 });
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
+  if (process.env.EXPECT_CORE_READY === '1') {
+    assert.match(await page.locator('#coreState').textContent(), /^Core ready/, 'Native core must initialize after reload');
+    const wadProbe = createWadBootProbe();
+    await page.evaluate(samples => {
+      window.__bootProbe = { samples, frames: 0, matched: false, lastFrame: null };
+    }, wadProbe.samples);
+    await page.locator('#gameFile').setInputFiles({ name: wadProbe.fileName, mimeType: 'application/octet-stream', buffer: wadProbe.bytes });
+    await page.locator('#play').click();
+    await page.waitForFunction(() => window.__bootProbe?.matched === true, null, { timeout: 120000 });
+    console.log(JSON.stringify({ nativeWadBoot: await page.evaluate(() => window.__bootProbe), titleId: wadProbe.titleId }));
+  }
   await page.evaluate(() => navigator.serviceWorker.ready);
   if (server) {
     // Stop the origin to test real network failure. Playwright's WebKit offline

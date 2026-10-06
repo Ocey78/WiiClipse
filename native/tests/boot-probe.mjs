@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Original GameCube probe: no SDK, ROM, game data, assembler, or native core required to generate.
+// Original video probes: no SDK, ROM, game data, assembler, or native core required to generate.
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function createBootProbe() {
+function createFrameProbe(wiiPhysical = false) {
   const words = [];
   const emit = (word) => words.push(word >>> 0);
   const d = (op, reg, base, immediate) => emit((op << 26) | (reg << 21) | (base << 16) | (immediate & 0xffff));
@@ -20,12 +20,19 @@ export function createBootProbe() {
     emit(opcode | (displacement & 0xfffc));
   };
 
-  // Dolphin's executable bootstrap maps 0xc0000000 to uncached physical RAM.
+  // Direct GC executable boot supplies BAT mappings; Wii NAND boot starts in real mode.
   // Write every framebuffer byte with PPC instructions, rather than shipping a bitmap.
-  lis(3, 0xc010); // r3 = uncached XFB at physical 0x00100000
+  lis(3, wiiPhysical ? 0x0010 : 0xc010); // XFB at physical 0x00100000
   li(7, 240); // row count
   const row = words.length;
-  for (const yuyv of [0x515a51f0, 0x91369122, 0x29f0296e, 0xeb80eb80]) {
+  const stripes = [
+    { yuyv: 0x515a51f0, r: 255, g: 0, b: 0 },
+    { yuyv: 0x91369122, r: 0, g: 255, b: 0 },
+    { yuyv: 0x29f0296e, r: 0, g: 0, b: 255 },
+    { yuyv: 0xeb80eb80, r: 255, g: 255, b: 255 },
+  ];
+  if (wiiPhysical) stripes.reverse(); // distinguish a WAD frame from an earlier GC probe frame
+  for (const { yuyv } of stripes) {
     // Limited-range BT.601: red, green, blue, white. One word is Y0 Cb Y1 Cr.
     load32(4, yuyv);
     li(6, 80); // 80 pairs = 160 pixels, four stripes per 640-pixel row
@@ -40,7 +47,7 @@ export function createBootProbe() {
   branch(0x40820000, row); // bne cr0,row
   emit(0x7c0004ac); // sync: finish uncached framebuffer stores before VI fetches
 
-  load32(5, 0xcc002000); // VI MMIO through bootstrap DBAT1
+  load32(5, wiiPhysical ? 0x0c002000 : 0xcc002000); // VI MMIO: real-mode or bootstrap DBAT1
   const vi16 = (offset, value) => { li(4, value); d(44, 4, 5, offset); };
   const vi32 = (offset, value) => { load32(4, value); d(36, 4, 5, offset); };
   vi16(0x02, 0); // temporarily disable display; do not request a reset
@@ -61,23 +68,24 @@ export function createBootProbe() {
   while (words.length % 8) emit(0x60000000); // unreachable nop padding
   const bytes = Buffer.alloc(0x100 + words.length * 4);
   bytes.writeUInt32BE(0x100, 0x00); // text section 0: file offset
-  bytes.writeUInt32BE(0x80003100, 0x48); // text section 0: address, after low-memory boot data
+  const entry = wiiPhysical ? 0x3400 : 0x80003100;
+  bytes.writeUInt32BE(entry, 0x48); // Wii IOS releases PPC at physical 0x3400
   bytes.writeUInt32BE(words.length * 4, 0x90); // text section 0: length
-  bytes.writeUInt32BE(0x80003100, 0xe0); // entry point
+  bytes.writeUInt32BE(entry, 0xe0); // entry point
   words.forEach((word, index) => bytes.writeUInt32BE(word, 0x100 + index * 4));
   return {
     bytes,
-    fileName: 'wiiclipse-boot-probe.dol',
+    fileName: wiiPhysical ? 'wiiclipse-wii-boot-probe.dol' : 'wiiclipse-boot-probe.dol',
     width: 640,
     height: 240,
-    samples: [
-      { x: 80, y: 120, r: 255, g: 0, b: 0 },
-      { x: 240, y: 120, r: 0, g: 255, b: 0 },
-      { x: 400, y: 120, r: 0, g: 0, b: 255 },
-      { x: 560, y: 120, r: 255, g: 255, b: 255 },
-    ],
+    samples: stripes.map(({ r, g, b }, index) => ({ x: 80 + index * 160, y: 120, r, g, b })),
   };
 }
+
+export function createBootProbe() { return createFrameProbe(); }
+
+// This DOL is only for the WAD boot path: loading it as a standalone DOL is not a Wii boot test.
+export function createWiiBootDol() { return createFrameProbe(true); }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const probe = createBootProbe();

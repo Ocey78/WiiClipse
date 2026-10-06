@@ -35,3 +35,8 @@ PPC branch/store encodings. These are structural checks. Real interpreter and vi
 verification requires loading this DOL in the compiled native browser core and
 matching the emitted color samples. The probe does not test audio, WAD launching,
 controllers, or compatibility with commercial games.
+
+The shared module also exposes `createWiiBootDol()` for the original
+[`wad-boot-probe.mjs`](wad-boot-probe.md) package generator. That variant uses
+physical addresses for Wii NAND boot and reverses the stripe order. It must be
+tested through its WAD package, not selected as a standalone GameCube DOL.

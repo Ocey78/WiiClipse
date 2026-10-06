@@ -39,12 +39,15 @@ for (const name of names) {
 }
 
 // Include the complete patched Dolphin tree and checked-out dependencies,
-// including their licenses. The release's Git tag retains our build scripts.
+// including licenses, plus the exact browser host, patches and build scripts.
 const sourceName = 'dolphin-browser-source.tar.gz';
 const sourceFile = path.join(releaseDir, sourceName);
 const packed = spawnSync('tar', [
   '--exclude=.git', '-czf', sourceFile,
   '-C', path.join(root, 'native/.build'), 'dolphin',
+  '-C', root, 'native/BrowserHost.cpp', 'native/build-dolphin-wasm.sh',
+  'native/bootstrap-emsdk-and-build.sh', 'native/patches', 'native/tests',
+  'native/README.md', '.github/workflows/native-core.yml',
 ], { stdio: 'inherit' });
 if (packed.error) throw packed.error;
 if (packed.status !== 0) throw new Error(`Source archive failed: ${packed.status}`);
@@ -56,15 +59,15 @@ await fs.writeFile(path.join(releaseDir, 'SHA256SUMS.txt'), [...files, source]
 await fs.writeFile(path.join(releaseDir, 'release-notes.md'), [
   'Experimental Dolphin browser core.',
   '',
-  'Verified in Chromium by executing an original GameCube DOL and checking its four-color video output.',
-  'Wii WAD file selection and the upstream channel loader are supported; this check does not establish compatibility with individual Wii channels or games.',
+  'Verified in Chromium by executing an original GameCube DOL and an original Wii WAD channel, and checking their distinct four-color video outputs.',
+  'These small homebrew checks do not establish compatibility or performance for individual commercial channels or games.',
   '',
   `Dolphin source: libretro/dolphin@${dolphinCommit}`,
   `Browser port and build scripts: Ocey78/WiiClipse@${hostCommit}`,
   `Emscripten: ${emscripten}`,
   `Build and verification: https://github.com/Ocey78/WiiClipse/actions/runs/${runId}`,
   '',
-  'The source archive contains the complete patched Dolphin checkout and its dependencies, including license files. The release tag contains the browser host, patches, and reproducible build scripts.',
+  'The source archive contains the complete patched Dolphin checkout and its dependencies, including license files, plus the browser host, patches, test probes, and reproducible build scripts. The release tag retains the matching frontend.',
   '',
 ].join('\n'));
 console.log(`Packaged verified native release ${tag}`);

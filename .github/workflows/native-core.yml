@@ -61,7 +61,7 @@ jobs:
       - run: npm ci
       - run: npm run verify
       - run: npx playwright install --with-deps chromium
-      - name: Boot original GameCube test program in Chromium
+      - name: Boot original GameCube DOL and Wii WAD in Chromium
         env:
           EXPECT_CORE_READY: '1'
         run: |
