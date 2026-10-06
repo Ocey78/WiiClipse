@@ -119,7 +119,7 @@ try {
     await context.close();
   }
   const report = { browser: browserName, root, coreRoot, frames, requestedRenderer: renderer || 'default', measuredAt: new Date().toISOString(),
-    scope: 'Uncapped real Dolphin worker execution and message delivery; excludes WebGL/audio playback and display pacing. Original probes do not establish commercial-game speed.', results };
+    scope: 'Uncapped real Dolphin worker execution and message delivery; excludes frontend presentation, audio playback, and display pacing. Original probes do not establish commercial-game speed.', results };
   if (process.env.PERF_OUT) await fs.writeFile(process.env.PERF_OUT, JSON.stringify(report, null, 2) + '\n');
 } finally {
   await browser?.close();

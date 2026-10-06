@@ -51,11 +51,17 @@ jobs:
           SMOKE_BROWSER: webkit
       - name: Verify WebGL pixel uploads and resizing
         run: node tests/renderer-browser.mjs
-      - name: Check Firefox startup and native boot
+      - name: Install Firefox virtual display and software graphics
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y xvfb xauth libgl1-mesa-dri libegl-mesa0 libglx-mesa0
+      - name: Check Firefox startup and native boot under Xvfb
         env:
           SMOKE_BROWSER: firefox
+          SMOKE_HEADED: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
           EXPECT_CORE_READY: '1'
-        run: npm run test:browser
+        run: xvfb-run -a npm run test:browser
       - name: Verify browser audio streaming
         run: node tests/browser-audio.mjs
       - name: Verify WebKit audio streaming

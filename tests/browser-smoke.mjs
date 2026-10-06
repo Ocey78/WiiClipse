@@ -72,7 +72,16 @@ let page;
 const errors = [];
 const browserLogs = [];
 try {
-  browser = await playwright[browserName].launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  browser = await playwright[browserName].launch({
+    headless: process.env.SMOKE_HEADED !== '1',
+    ...(browserName === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}),
+    // Linux CI uses Xvfb + Mesa, because Firefox's headless backend can reject
+    // WebGL2 before the app boots. Permit that explicit software GL driver;
+    // all context creation, native boot and rendered-pixel checks still apply.
+    ...(browserName === 'firefox' && process.platform === 'linux' && process.env.LIBGL_ALWAYS_SOFTWARE === '1' ? {
+      firefoxUserPrefs: { 'webgl.force-enabled': true, 'webgl.forbid-software': false },
+    } : {}),
+  });
   const context = await browser.newContext();
   const bootProbe = createBootProbe();
   if (process.env.EXPECT_CORE_READY === '1') {
