@@ -9,6 +9,10 @@
 #include <vector>
 #include "Common/CommonTypes.h"
 #include "interpreter-dispatch-instruction.h"
+#ifdef TEST_BROWSER_COMPILER_NATIVE_CR
+#include "Core/PowerPC/ConditionRegister.h"
+#include "compiler-cr-table.h"
+#endif
 
 constexpr u32 EXCEPTION_DSI = 0x8;
 constexpr u32 EXCEPTION_PROGRAM = 0x80;
@@ -16,6 +20,7 @@ constexpr u32 BO_DONT_DECREMENT_FLAG = 4;
 constexpr u32 BO_DONT_CHECK_CONDITION = 16;
 namespace PowerPC
 {
+#ifndef TEST_BROWSER_COMPILER_NATIVE_CR
 constexpr u32 CR_SO = 1, CR_EQ = 2, CR_GT = 4, CR_LT = 8;
 struct ConditionRegister
 {
@@ -23,6 +28,7 @@ struct ConditionRegister
   void SetField(u32 index, u32 value) { fields[index] = value; }
   u32 GetBit(u32 index) const { return (fields[index / 4] >> (3 - index % 4)) & 1; }
 };
+#endif
 struct PowerPCState
 {
   u32 pc = 0, npc = 0, Exceptions = 0;
@@ -32,8 +38,15 @@ struct PowerPCState
   ConditionRegister cr;
   struct { bool IR = true; } msr;
   bool xer_so = false;
+  u8 xer_so_ov = 0;
   u32 sentinels[8]{};
-  bool GetXER_SO() const { return xer_so; }
+  bool GetXER_SO() const {
+#ifdef TEST_BROWSER_COMPILER_NATIVE_CR
+    return xer_so_ov >> 1;
+#else
+    return xer_so;
+#endif
+  }
 };
 struct PowerPCManager
 {
@@ -80,6 +93,9 @@ struct Interpreter
   Memory& m_mmu;
   BranchWatch& m_branch_watch;
   bool m_end_block = false;
+#ifdef TEST_BROWSER_COMPILER_NATIVE_CR
+#include "compiler-branch-accessor.h"
+#endif
   template <typename T> static void Helper_IntCompare(PowerPC::PowerPCState&, UGeckoInstruction, T, T);
   static void cmpi(Interpreter&, UGeckoInstruction);
   static void cmpli(Interpreter&, UGeckoInstruction);

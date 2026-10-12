@@ -26,5 +26,5 @@ loop=text[start:end].replace("::ExecuteCallbackStream(","::ExecuteActualCallback
 loop=loop.replace("{\n#endif", "{", 1)
 (output/"compiler-loop.h").write_text(loop+"\n")
 gekko=(Path(sys.argv[1])/"Source/Core/Core/PowerPC/Gekko.h").read_text()
-registers="\n".join("constexpr u32 "+name+"="+re.search(r"\b"+name+r"\s*=\s*(\d+)",gekko).group(1)+";" for name in ["SPR_MMCR0","SPR_MMCR1"])
+registers="\n".join("constexpr u32 "+name+"="+re.search(r"\b"+name+r"\s*=\s*(\d+)",gekko).group(1)+";" for name in ["SPR_MMCR0","SPR_MMCR1","SPR_LR","SPR_CTR"])
 (output/"compiler-descriptor-registers.h").write_text(registers+"\n")

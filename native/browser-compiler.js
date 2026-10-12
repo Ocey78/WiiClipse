@@ -46,6 +46,14 @@ addToLibrary({
         result.push(byte | (last ? 0 : 128)); if (last) return result;
       }
     }
+    function s64(value) {
+      var result = []; value = BigInt.asIntN(64, value);
+      while (true) {
+        var byte = Number(value & 127n); value >>= 7n;
+        var last = (value === 0n && !(byte & 64)) || (value === -1n && (byte & 64));
+        result.push(byte | (last ? 0 : 128)); if (last) return result;
+      }
+    }
     function name(value) { var bytes = Array.from(new TextEncoder().encode(value)); return u(bytes.length).concat(bytes); }
     function section(id, bytes) { return [id].concat(u(bytes.length), bytes); }
     function vector(items) { return u(items.length).concat.apply(u(items.length), items); }
@@ -73,6 +81,64 @@ addToLibrary({
       function constant(value) { return [0x41].concat(s(value)); }
       function load(register) { return [0x20, 0, 0x28, 2].concat(u(state.gpr + register * 4)); }
       function stateLoad(offset) { return [0x20, 0, 0x28, 2].concat(u(offset)); }
+      function constant64(value) { return [0x42].concat(s64(value)); }
+      function stateField(field, width, alignment) {
+        require(uint(state[field]) && (state[field] & (alignment - 1)) === 0 &&
+          state[field] <= env.memory.buffer.byteLength - width);
+      }
+      function lowerInstruction(op) {
+        var compare = op.lowering === 'cmpi' || op.lowering === 'cmpli';
+        var branch = op.lowering === 'bx' || op.lowering === 'bcx';
+        if (!compare && !branch) return false;
+        var fields = compare ? ['crFields', 'xerSoOv'] : op.lowering === 'bcx' ? ['crFields', 'ctr', 'lr'] : ['lr'];
+        if (!fields.every(function(field) { return state[field] !== undefined; }) ||
+            (branch && (op.endBlockAddress === undefined || op.pc === null))) return false;
+        fields.forEach(function(field) { stateField(field, field === 'crFields' ? 64 : field === 'xerSoOv' ? 1 : 4,
+          field === 'crFields' ? 8 : field === 'xerSoOv' ? 1 : 4); });
+        var primary = op.word >>> 26;
+        require(primary === (op.lowering === 'cmpi' ? 11 : op.lowering === 'cmpli' ? 10 : op.lowering === 'bx' ? 18 : 16));
+        if (compare) {
+          var a = load((op.word >>> 16) & 31);
+          var b = constant(op.lowering === 'cmpi' ? (op.word << 16) >> 16 : op.word & 65535);
+          var signed = op.lowering === 'cmpi';
+          // SetField stores the canonical native CR64 encoding, including the
+          // bit32 marker and SO truth test; a sign-extended subtraction differs.
+          emit([0x20, 0], a, b, [signed ? 0x48 : 0x49, 0x04, 0x7e], constant64(0xc000000100000001n),
+            [0x05], a, b, [signed ? 0x4a : 0x4b, 0x04, 0x7e], constant64(0x0000000100000001n),
+            [0x05], constant64(0x8000000100000000n), [0x0b, 0x0b],
+            [0x20, 0, 0x2d, 0], u(state.xerSoOv), constant(1), [0x76, 0x45, 0x45, 0xad],
+            constant64(59n), [0x86, 0x84, 0x37, 3], u(state.crFields + ((op.word >>> 23) & 7) * 8));
+          return true;
+        }
+        require(uint(op.endBlockAddress) && op.endBlockAddress < env.memory.buffer.byteLength);
+        var lk = op.word & 1, aa = op.word & 2;
+        var displacement = op.lowering === 'bx' ? (op.word << 6) >> 6 & ~3 : (op.word << 16) >> 16 & ~3;
+        if (op.lowering === 'bcx') {
+          var bo = (op.word >>> 21) & 31, bi = (op.word >>> 16) & 31;
+          if (!(bo & 4)) emit([0x20, 0], stateLoad(state.ctr), constant(1), [0x6b, 0x36, 2], u(state.ctr));
+          var counter = bo & 4 ? constant(1) : stateLoad(state.ctr).concat([0x45, 0x45], constant((bo >>> 1) & 1), [0x73]);
+          var condition = constant(1);
+          if (!(bo & 16)) {
+            var raw = [0x20, 0, 0x29, 3].concat(u(state.crFields + (bi >>> 2) * 8));
+            switch (bi & 3) {
+              case 0: condition = raw.concat(constant64(62n), [0x88], constant64(1n), [0x83, 0xa7]); break;
+              case 1: condition = raw.concat(constant64(0n), [0x55]); break;
+              case 2: condition = raw.concat([0xa7, 0x45]); break;
+              case 3: condition = raw.concat(constant64(59n), [0x88], constant64(1n), [0x83, 0xa7]); break;
+            }
+            condition = condition.concat(constant((bo >>> 3) & 1), [0x46]);
+          }
+          emit(counter, condition, [0x71, 0x04, 0x40]);
+        }
+        // Native bcx updates LR only on a taken branch. NPC's not-taken value
+        // was supplied by the original PC-writing callback before this lowering.
+        if (lk) emit([0x20, 0], stateLoad(state.pc), constant(4), [0x6a, 0x36, 2], u(state.lr));
+        emit([0x20, 0], aa ? constant(displacement) : stateLoad(state.pc).concat(constant(displacement), [0x6a]),
+          [0x36, 2], u(state.npc));
+        if (op.lowering === 'bcx') emit([0x0b]);
+        emit(constant(op.endBlockAddress), constant(1), [0x3a, 0, 0]);
+        return true;
+      }
       function inverse(bytes) { return bytes.concat(constant(-1), [0x73]); }
       function binary(a, b, opcode) { return a.concat(b, [opcode]); }
       function helper(index, type) {
@@ -137,8 +203,9 @@ addToLibrary({
           // Emscripten passes UGeckoInstruction aggregates by pointer despite
           // the raw handler's vii signature. A native scalar viii bridge owns
           // the by-value temporary, then calls the original typed handler.
-          emit(constant(op.interpreter), constant(op.word), constant(op.handler),
-            [0x10], u(helper(descriptor.instructionBridge, 2)));
+          if (!lowerInstruction(op))
+            emit(constant(op.interpreter), constant(op.word), constant(op.handler),
+              [0x10], u(helper(descriptor.instructionBridge, 2)));
           ++opCount;
         } else if (op.kind === 'callback') {
           // Native descriptors contain only validated original instruction runs,

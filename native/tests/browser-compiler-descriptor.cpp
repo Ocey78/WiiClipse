@@ -4,6 +4,7 @@
 #undef main
 #include <sstream>
 #include <string>
+#include <tuple>
 #include "Core/PowerPC/CachedInterpreter/BrowserCompilerGate.h"
 #include "Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h"
 #include "Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h"
@@ -19,6 +20,7 @@ static void dweb_browser_compile_clear(u32) { ++clear_calls; }
 template<bool> struct EndOperands;
 template<> struct EndOperands<false> { u32 downcount,num_load_stores,num_fp_inst,padding=0; };
 struct HaltOperands { PowerPC::PowerPCManager& power_pc;u32 current_pc,downcount; };
+namespace CPU { enum class State { Running, Stepping, PowerDown }; }
 struct CachedInterpreter : BrowserCallbacks
 {
   using BrowserCompilerGate=BrowserCompiler::Gate;
@@ -35,12 +37,17 @@ struct CachedInterpreter : BrowserCallbacks
   template<bool p> static s32 EndBlock(PowerPC::PowerPCState&,const EndOperands<p>&) { ++end_calls;return 0; }
   std::string DescribeBrowserCompilerBlock(const BrowserCompilerGate&) const;
   BrowserCompiler::Registry m_browser_compiler;
-  struct { struct { bool stepping=false;bool IsStepping() const { return stepping; } } cpu;
-    auto& GetCPU() { return cpu; } } m_system;
+  struct { struct { bool stepping=false;CPU::State state=CPU::State::Running;
+      bool IsStepping() const { return stepping; } const CPU::State* GetStatePtr() const { return &state; } } cpu;
+    struct { BranchWatch watch;auto& GetBranchWatch() { return watch; }
+      const auto& GetBranchWatch() const { return watch; } } power_pc;
+    auto& GetCPU() { return cpu; } auto& GetPowerPC() { return power_pc; }
+    const auto& GetPowerPC() const { return power_pc; } } m_system;
   bool on_owner=true,debug=false,profile=false;
   mutable unsigned owner_checks=0;
   unsigned fallback_executions=0;
   PowerPC::PowerPCState m_ppc_state;
+  struct { const u8* Dispatch() { return nullptr; } } m_block_cache;
   bool BrowserCompilerOnOwnerThread() const { ++owner_checks;return on_owner; }
   bool IsDebuggingEnabled() const { return debug; }
   bool IsProfilingEnabled() const { return profile; }
@@ -127,10 +134,44 @@ int main()
   // No earlier observer receives a terminal-only fast-path cycle field.
   assert(json.find("\"terminal\":false,\"cycles\"")==std::string::npos);
 #endif
+#ifdef TEST_BROWSER_COMPILER_NATIVE_CR
+  assert(json.find("\"crFields\":"+std::to_string(offsetof(PowerPC::PowerPCState,cr)+offsetof(PowerPC::ConditionRegister,fields)))!=std::string::npos);
+  assert(json.find("\"xerSoOv\":"+std::to_string(offsetof(PowerPC::PowerPCState,xer_so_ov)))!=std::string::npos);
+  assert(json.find("\"lr\":"+std::to_string(offsetof(PowerPC::PowerPCState,spr)+sizeof(u32)*SPR_LR))!=std::string::npos);
+  assert(json.find("\"ctr\":"+std::to_string(offsetof(PowerPC::PowerPCState,spr)+sizeof(u32)*SPR_CTR))!=std::string::npos);
+#endif
   assert(json.find("\"payload\":"+std::to_string(Address(gate.retained+checked_offset)))!=std::string::npos);
   assert(json.find("\"payload\":"+std::to_string(Address(gate.entry+checked_offset)))==std::string::npos);
   program.bytes.fill(0);assert(cached.DescribeBrowserCompilerBlock(gate)==json);
   registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+#ifdef TEST_BROWSER_COMPILER_NATIVE_CR
+  for(const auto [opcode,handler,label]:{
+       std::tuple{10u,Interpreter::cmpli,"cmpli"},std::tuple{11u,Interpreter::cmpi,"cmpi"},
+       std::tuple{16u,Interpreter::bcx,"bcx"},std::tuple{18u,Interpreter::bx,"bx"}}) {
+    Program native_op;
+    auto canonical=load;canonical.func=handler;canonical.inst.hex=opcode<<26;
+    native_op.Add(CachedInterpreter::Interpret<true>,canonical);native_op.End();
+    const auto lowered=Describe(cached,native_op,registry,gate);
+    assert(lowered.find(std::string("\"lowering\":\"")+label+"\"")!=std::string::npos);
+    if(opcode==16||opcode==18)assert(lowered.find("\"endBlockAddress\":"+std::to_string(Address(fixture.interpreter.BrowserCompilerEndBlockFlag())))!=std::string::npos);
+    registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+    canonical.func=CustomFallback;Program injected;
+    injected.Add(CachedInterpreter::Interpret<true>,canonical);injected.End();
+    const auto native_fallback=Describe(cached,injected,registry,gate);
+    assert(!native_fallback.empty() && native_fallback.find("\"lowering\"")==std::string::npos);
+    registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+  }
+  for(unsigned rejected=0;rejected<3;++rejected) {
+    Program branch;auto canonical=load;canonical.func=Interpreter::bcx;canonical.inst.hex=16u<<26;
+    if(rejected==0)branch.Add(CachedInterpreter::Interpret<false>,canonical);
+    else branch.Add(CachedInterpreter::Interpret<true>,canonical);
+    if(rejected==1)branch.Add(CachedInterpreter::Interpret<false>,load);
+    branch.End();cached.m_system.power_pc.watch.enabled=rejected==2;
+    assert(Describe(cached,branch,registry,gate).empty());
+    registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+  }
+  cached.m_system.power_pc.watch.enabled=false;
+#endif
 #ifdef TEST_BROWSER_COMPILER_FPU
   Program fpu_program;
   const HaltOperands halt{fixture.manager,0x80002200,7};

@@ -1,0 +1,36 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index b847ba0..5838efa 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -236,8 +236,29 @@ s32 CachedInterpreter::RunBrowserCompilerGate(PowerPC::PowerPCState& ppc_state,
+     // Only generated code uses retained payloads. Keep them and its table slot
+     // alive across native callbacks that invalidate this block or reset the core.
+     ++registry.active;
+-    ++registry.compiled_calls;
+-    gate.compiled(ppc_state, gate.retained);
++    const CPU::State* state_ptr = cached.m_system.GetCPU().GetStatePtr();
++    const BrowserCompilerGate* current = &gate;
++    for (u32 chained = 0;;)
++    {
++      ++registry.compiled_calls;
++      current->compiled(ppc_state, current->retained);
++      // A callback may retire/reset/reuse its Gate. Never dereference current
++      // again; obtain every successor from the original, invalidation-aware cache.
++      // These are the same timing and stop boundaries as Run's outer block loop.
++      if (++chained >= 32 || ppc_state.downcount <= 0 || *state_ptr != CPU::State::Running ||
++          !registry.enabled)
++        break;
++      const u8* next = cached.m_block_cache.Dispatch();
++      if (!next || *reinterpret_cast<const AnyCallback*>(next) !=
++                       AnyCallbackCast(RunBrowserCompilerGate))
++        break;
++      current = reinterpret_cast<const BrowserCompilerGate*>(next + sizeof(AnyCallback));
++      if (current->owner != &cached || !current->compiled || !allowed())
++        break;
++#if defined(DWEB_CPU_DIAGNOSTICS)
++      s_browser_cpu_profile.Record(ppc_state.pc, static_cast<u32>(ppc_state.feature_flags));
++#endif
++    }
+     --registry.active;
+     cached.DrainBrowserCompiler();
+     return 0;

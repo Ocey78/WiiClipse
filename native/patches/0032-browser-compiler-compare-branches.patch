@@ -1,0 +1,69 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index b847ba0..95044e2 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -312,9 +312,14 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+       << ",\"downcount\":" << offsetof(PowerPC::PowerPCState, downcount)
+       << ",\"mmcr0\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_MMCR0
+       << ",\"mmcr1\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_MMCR1
++      << ",\"crFields\":" << offsetof(PowerPC::PowerPCState, cr) + offsetof(PowerPC::ConditionRegister, fields)
++      << ",\"xerSoOv\":" << offsetof(PowerPC::PowerPCState, xer_so_ov)
++      << ",\"lr\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_LR
++      << ",\"ctr\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_CTR
+       << "},\"ops\":[";
+   unsigned records = 0;
+   bool terminal = false;
++  bool branch_requires_end = false;
+   const auto comma = [&] { if (records++) out << ','; };
+   const auto allowed_instruction = [](u32 word) {
+     const u32 sub = (word >> 1) & 1023;
+@@ -328,6 +333,23 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+     out << "{\"kind\":\"instruction\",\"handler\":" << number(handler)
+         << ",\"interpreter\":" << number(interpreter) << ",\"word\":" << word << ",\"pc\":";
+     if (write_pc) out << pc; else out << "null";
++    const u32 primary = word >> 26;
++    const char* lowering = primary == 10 && handler == Interpreter::cmpli ? "cmpli" :
++                           primary == 11 && handler == Interpreter::cmpi ? "cmpi" :
++                           primary == 16 && handler == Interpreter::bcx ? "bcx" :
++                           primary == 18 && handler == Interpreter::bx ? "bx" : nullptr;
++    if (lowering && (primary == 16 || primary == 18))
++    {
++      // Branch watching changes clear the cache under the CPU guard. An async
++      // descriptor from before that clear cannot install in the next epoch.
++      if (!write_pc || m_system.GetPowerPC().GetBranchWatch().GetRecordingActive())
++        return false;
++      static_assert(sizeof(bool) == 1);
++      out << ",\"endBlockAddress\":" << number(interpreter->BrowserCompilerEndBlockFlag());
++      branch_requires_end = true;
++    }
++    if (lowering)
++      out << ",\"lowering\":\"" << lowering << "\"";
+     out << '}';
+     return true;
+   };
+@@ -336,6 +358,8 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+     if (end - cursor < static_cast<ptrdiff_t>(sizeof(AnyCallback)))
+       return {};
+     const auto callback = *reinterpret_cast<const AnyCallback*>(cursor);
++    if (branch_requires_end && callback != AnyCallbackCast(EndBlock<false>))
++      return {}; // The first lowering scope ends at the original terminal.
+     const u8* payload = cursor + sizeof(callback);
+     std::size_t size = 0;
+     if (callback == AnyCallbackCast(RunBrowserIntegerOps))
+diff --git a/Source/Core/Core/PowerPC/Interpreter/Interpreter.h b/Source/Core/Core/PowerPC/Interpreter/Interpreter.h
+index b3816e7..e72277e 100644
+--- a/Source/Core/Core/PowerPC/Interpreter/Interpreter.h
++++ b/Source/Core/Core/PowerPC/Interpreter/Interpreter.h
+@@ -41,6 +41,12 @@ public:
+   void ClearCache() override;
+   const char* GetName() const override;
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  // The compiler must preserve branch handlers' private interpreter flag.
++  // Expose its address only in the opt-in backend, never infer object layout.
++  bool* BrowserCompilerEndBlockFlag() { return &m_end_block; }
++#endif
++
+   static void unknown_instruction(Interpreter& interpreter, UGeckoInstruction inst);
+ 
+   // Branch Instructions

@@ -289,6 +289,134 @@ test('retained native interpret runs preserve payload updates and integer/checke
   assert.equal(env.compiler.request(JSON.stringify(oversized),oversized.gate,oversized.blockID,oversized.epoch),-1);
 });
 
+test('inline immediate compares store exact native CR64 fields and preserve other registers', async () => {
+  const env=environment();
+  const state={gpr:0,pc:128,npc:132,crFields:160,xerSoOv:224,ctr:228,lr:232};
+  const words=new Uint32Array(env.memory.buffer),view=new DataView(env.memory.buffer);
+  let seed=0x54102bcf,checks=0;
+  const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return seed>>>0;};
+  const expected=(a,b,so)=> (a<b?0xc000000100000001n:a>b?0x0000000100000001n:0x8000000100000000n)|(so?1n<<59n:0n);
+  for(const lowering of ['cmpi','cmpli']) for(let field=0;field<8;++field) for(const a of [0,1,7,31]) {
+    const immediate=[0,1,0x7fff,0x8000,0xffff][(field+a)%5];
+    const word=(((lowering==='cmpi'?11:10)<<26)|(field<<23)|(a<<16)|immediate)>>>0;
+    const run=await env.compiler.compile(descriptor([{kind:'instruction',lowering,handler:0,interpreter:512,word,pc:null}],{state}));
+    for(let i=0;i<1000;++i){
+      for(let r=0;r<32;++r)words[r]=random();
+      for(let f=0;f<8;++f)view.setBigUint64(state.crFields+f*8,(BigInt(random())<<32n)|BigInt(random()),true);
+      const before=words.slice(0,32),cr=Array.from({length:8},(_,f)=>view.getBigUint64(state.crFields+f*8,true));
+      const so=[0,1,2,3,254,255][i%6];view.setUint8(state.xerSoOv,so);
+      const immediateValue=lowering==='cmpi'?(immediate<<16)>>16:immediate;
+      if(i<8)words[a]=[immediateValue,immediateValue-1,immediateValue+1,0,0x7fffffff,0x80000000,0xffffffff,1][i]>>>0;
+      before[a]=words[a];
+      words[32]=0xdeadbeef;words[33]=0x11223344;words[57]=123;words[58]=456;
+      const left=lowering==='cmpi'?words[a]|0:words[a],right=lowering==='cmpi'?(immediate<<16)>>16:immediate;
+      assert.equal(run(0,0),0);assert.equal(view.getBigUint64(state.crFields+field*8,true),expected(left,right,so>>1));
+      for(let f=0;f<8;++f)if(f!==field)assert.equal(view.getBigUint64(state.crFields+f*8,true),cr[f]);
+      assert.deepEqual(words.slice(0,32),before);assert.equal(words[32],0xdeadbeef);assert.equal(words[33],0x11223344);
+      assert.equal(words[57],123);assert.equal(words[58],456);assert.equal(view.getUint8(state.xerSoOv),so);++checks;
+    }
+  }
+  assert.equal(checks,64_000);
+});
+
+test('inline conditional branches cover all BO/BI modes and arbitrary CR64 encodings', async () => {
+  const env=environment();
+  const state={gpr:0,pc:128,npc:132,crFields:160,xerSoOv:224,ctr:228,lr:232};
+  const words=new Uint32Array(env.memory.buffer),view=new DataView(env.memory.buffer);
+  const raws=[0n,1n,0xffffffffn,0x100000000n,0x8000000000000000n,0x4000000000000000n,
+    0x0800000000000000n,0xffffffffffffffffn,0x8000000100000000n,0xc000000100000001n,0x0000000100000001n];
+  const bit=(raw,bi)=>[Number((raw>>62n)&1n),BigInt.asIntN(64,raw)>0n?1:0,(raw&0xffffffffn)===0n?1:0,Number((raw>>59n)&1n)][bi&3];
+  let checks=0,seed=0x41bacdff;
+  const random=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return seed>>>0;};
+  for(let bo=0;bo<32;++bo)for(let bi=0;bi<32;++bi)for(const aa of [0,1])for(const lk of [0,1]){
+    const pc=[0,0xfffffffc,0x80000000,0x7ffffffc][(bo+bi)&3];
+    const displacement=[0,4,0x7ffc,-0x8000,-4][(bo^bi)%5];
+    const word=((16<<26)|(bo<<21)|(bi<<16)|(displacement&0xfffc)|(aa<<1)|lk)>>>0;
+    const op={kind:'instruction',lowering:'bcx',handler:0,interpreter:512,word,pc,endBlockAddress:512};
+    const run=await env.compiler.compile(descriptor([op],{state}));
+    for(let g=0;g<32;++g)words[g]=random();const gpr=words.slice(0,32);
+    for(const ctr of [0,1,2,0xffffffff,0x80000000])for(let r=0;r<raws.length+8;++r){
+      for(let f=0;f<8;++f)view.setBigUint64(state.crFields+f*8,r<raws.length?raws[(r+f)%raws.length]:(BigInt(random())<<32n)|BigInt(random()),true);
+      const cr=Array.from({length:8},(_,f)=>view.getBigUint64(state.crFields+f*8,true));
+      const nextCTR=(bo&4)?ctr:(ctr-1)>>>0;
+      const taken=Boolean((bo&4)||(((nextCTR!==0?1:0)^(bo>>1))&1))&&Boolean((bo&16)||bit(cr[bi>>2],bi)===((bo>>3)&1));
+      words[57]=ctr;words[58]=0x89abcdef;words[32]=123;words[33]=456;view.setUint8(512,0);view.setUint8(state.xerSoOv,3);
+      assert.equal(run(0,0),0);assert.equal(words[32],pc);assert.equal(words[33],taken?((aa?0:pc)+displacement)>>>0:(pc+4)>>>0);
+      assert.equal(words[57],nextCTR);assert.equal(words[58],taken&&lk?(pc+4)>>>0:0x89abcdef);assert.equal(view.getUint8(512),1);
+      for(let f=0;f<8;++f)assert.equal(view.getBigUint64(state.crFields+f*8,true),cr[f]);assert.equal(view.getUint8(state.xerSoOv),3);++checks;
+    }
+    assert.deepEqual(words.slice(0,32),gpr);
+  }
+  assert.equal(checks,389_120);
+});
+
+test('inline unconditional branches preserve CTR/CR and use absolute interpreter end flags', async () => {
+  const env=environment();env.memory.grow(1);
+  const state={gpr:0,pc:128,npc:132,crFields:160,xerSoOv:224,ctr:228,lr:232};
+  const words=new Uint32Array(env.memory.buffer),view=new DataView(env.memory.buffer);
+  for(const pc of [0,4,0xfffffffc,0x80000000])for(const displacement of [0,4,-4,0x1fffffc,-0x2000000])for(const aa of [0,1])for(const lk of [0,1]){
+    const word=((18<<26)|(displacement&0x03fffffc)|(aa<<1)|lk)>>>0;
+    const op={kind:'instruction',lowering:'bx',handler:0,interpreter:512,word,pc,endBlockAddress:512};
+    const run=await env.compiler.compile(descriptor([op],{state}));
+    for(const pointer of [0,2*65536]){
+      const base=pointer/4;words[base+57]=0x98765432;words[base+58]=0xabcdef01;
+      view.setBigUint64(pointer+160,0xa1b2c3d4e5f60718n,true);view.setUint8(pointer+224,3);view.setUint8(512,0);
+      assert.equal(run(pointer,0),0);assert.equal(words[base+32],pc);assert.equal(words[base+33],((aa?0:pc)+displacement)>>>0);
+      assert.equal(words[base+57],0x98765432);assert.equal(words[base+58],lk?(pc+4)>>>0:0xabcdef01);
+      assert.equal(view.getBigUint64(pointer+160,true),0xa1b2c3d4e5f60718n);assert.equal(view.getUint8(pointer+224),3);assert.equal(view.getUint8(512),1);
+    }
+  }
+});
+
+test('compare lowering flushes exact CR before native observers and missing metadata falls back', async () => {
+  const env=environment();
+  const state={gpr:0,pc:128,npc:132,crFields:160,xerSoOv:224,ctr:228,lr:232};
+  const u=n=>{const a=[];do{const b=n&127;n>>>=7;a.push(b|(n?128:0));}while(n);return a;};
+  const sec=(id,a)=>[id,...u(a.length),...a];
+  const ops=[32,0,32,0,40,2,...u(164),54,2,16,32,0,32,1,54,2,20,11];
+  const bytes=Uint8Array.from([0,97,115,109,1,0,0,0,
+    ...sec(1,[1,96,3,127,127,127,0]),...sec(2,[1,3,101,110,118,6,109,101,109,111,114,121,2,3,2,8]),
+    ...sec(3,[1,0]),...sec(7,[1,3,114,117,110,0,0]),...sec(10,[1,ops.length+1,0,...ops])]);
+  env.table.set(1,(await WebAssembly.instantiate(bytes,{env:{memory:env.memory}})).instance.exports.run);
+  const compare={kind:'instruction',lowering:'cmpi',handler:0,interpreter:0,word:((11<<26)|(1<<16)|7)>>>0,pc:0xfffffffc};
+  const observer={kind:'instruction',handler:0,interpreter:0,word:0x12345678,pc:null};
+  const run=await env.compiler.compile(descriptor([compare,observer],{state,instructionBridge:1}));
+  const words=new Uint32Array(env.memory.buffer),view=new DataView(env.memory.buffer);words[1]=7;view.setUint8(224,2);
+  assert.equal(run(0,0),0);assert.equal(words[4],0x88000001);assert.equal(words[5],0x12345678);assert.equal(words[32],0xfffffffc);assert.equal(words[33],0);
+  for(const missing of ['crFields','xerSoOv']){
+    const partial={...state};delete partial[missing];
+    const fallback=await env.compiler.compile(descriptor([compare],{state:partial,instructionBridge:1}));
+    words[5]=0;assert.equal(fallback(0,0),0);assert.equal(words[5],compare.word);
+  }
+  const branch={...compare,lowering:'bcx',word:((16<<26)|(12<<21)|(2<<16)|9)>>>0,endBlockAddress:512};
+  for(const missing of ['crFields','ctr','lr','endBlockAddress']){
+    const partial={...state},op={...branch};if(missing==='endBlockAddress')delete op[missing];else delete partial[missing];
+    const fallback=await env.compiler.compile(descriptor([op],{state:partial,instructionBridge:1}));
+    words[5]=0;view.setUint8(512,0);assert.equal(fallback(0,0),0);assert.equal(words[5],branch.word);assert.equal(view.getUint8(512),0);
+  }
+  for(const bad of [{state:{...state,crFields:161}}, {ops:[{...compare,word:0},...descriptor([]).ops]},
+    {state:{...state,xerSoOv:env.memory.buffer.byteLength}}]){
+    const d=descriptor([compare],{state,...bad});assert.equal(env.compiler.request(JSON.stringify(d),d.gate,d.blockID,d.epoch),-1);
+  }
+});
+
+test('compare then branch then inline EndBlock observes every state update in order', async () => {
+  const env=environment();
+  const state={gpr:0,pc:128,npc:132,crFields:160,xerSoOv:224,ctr:228,lr:232,downcount:236,mmcr0:240,mmcr1:244};
+  const compare={kind:'instruction',lowering:'cmpi',handler:0,interpreter:512,word:((11<<26)|(3<<23)|(1<<16)|7)>>>0,pc:null};
+  const branch={kind:'instruction',lowering:'bcx',handler:0,interpreter:512,
+    word:((16<<26)|(12<<21)|(14<<16)|9)>>>0,pc:0xfffffffc,endBlockAddress:512};
+  const end={kind:'callback',role:'end',handler:0,payload:0,distance:20,terminal:true,cycles:2};
+  const d=descriptor([compare,branch,end],{state}),prepared=env.compiler.encode(d),run=await env.compiler.compile(d);
+  assert.equal(WebAssembly.Module.imports(new WebAssembly.Module(prepared.bytes)).filter(x=>x.kind==='function').length,1);
+  const words=new Uint32Array(env.memory.buffer),view=new DataView(env.memory.buffer);
+  for(const value of [6,7,8]){
+    words[1]=value;words[57]=12;words[58]=123;words[59]=words[60]=words[61]=0;view.setUint8(224,3);view.setUint8(512,0);
+    assert.equal(run(0,0),0);assert.equal(words[32],value===7?4:0);assert.equal(words[33],words[32]);
+    assert.equal(words[57],12);assert.equal(words[58],value===7?0:123);assert.equal(words[59],0xfffffffe);assert.equal(view.getUint8(512),1);
+  }
+});
+
 test('invalid descriptors and unsupported helpers leave original path untouched', () => {
   const env = environment();
   for (const d of [descriptor([{ kind: 'hle' }]), descriptor([integer(25)]),
