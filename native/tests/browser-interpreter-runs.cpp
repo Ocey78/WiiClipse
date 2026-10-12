@@ -1,5 +1,8 @@
 // Production callbacks and DoJit are extracted by extract-interpreter-runs.py.
 // Only memory, debugger/HLE and code-emitter boundaries are test doubles.
+#ifndef __EMSCRIPTEN__
+#define __EMSCRIPTEN__ 1
+#endif
 #include <array>
 #include <cassert>
 #include <bit>
