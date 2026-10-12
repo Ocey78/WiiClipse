@@ -23,6 +23,7 @@ const settings = {
   advance: process.env.PERF_ADVANCE === '1',
   inputSteps: JSON.parse(process.env.PERF_INPUT_STEPS || '[]'),
   samplingIntervalUs: Number(process.env.PERF_SAMPLE_US || 1000),
+  guestProfile: process.env.PERF_GUEST_PROFILE === '1',
 };
 if (!Number.isInteger(settings.warmup) || settings.warmup < 120 || settings.warmup > 2000 ||
     !Number.isInteger(settings.frames) || settings.frames < 10 || settings.frames > 2000 ||
@@ -47,6 +48,18 @@ const playwright = await import(process.env.PLAYWRIGHT_MODULE ? pathToFileURL(pr
 const instrumentation = `
 self.__profileTotals = {};
 self.__profileHostVideoDepth = 0;
+self.__setGuestProfile = function(enabled) {
+  const module = adapter?.module;
+  if (typeof module?._dweb_set_cpu_profile !== 'function' ||
+      typeof module?._dweb_reset_cpu_profile !== 'function' ||
+      typeof module?._dweb_cpu_profile !== 'function')
+    throw new Error('Guest profiling requires a native diagnostic build.');
+  if (enabled) module._dweb_reset_cpu_profile();
+  module._dweb_set_cpu_profile(Number(enabled));
+};
+self.__readGuestProfile = function() {
+  return adapter.module.cwrap('dweb_cpu_profile', 'string', [])();
+};
 self.__profileAdd = function(name, elapsed) {
   const item = self.__profileTotals[name] ||= { calls: 0, ms: 0 };
   item.calls++; item.ms += elapsed;
@@ -190,6 +203,9 @@ try {
       worker.postMessage(message);
     });
     worker.onmessage = ({ data }) => {
+      // Optional ignored diagnostic shims can attach per-program completed GPU
+      // draws and shader sources. Retain them locally in the profile report.
+      if (data.drawProfile) (state.drawProfiles ||= []).push(data.drawProfile);
       if (data.type === 'video') { state.videos++; state.bitmaps += Number(!!data.bitmap); data.bitmap?.close(); }
       if (data.type === 'log' || data.type === 'status') { state.logs.push(data.message); if (state.logs.length > 40) state.logs.shift(); }
       if (data.type === pending?.type) { const waiter = pending; pending = null; waiter.resolve(data); }
@@ -251,9 +267,20 @@ try {
     console.log(JSON.stringify({ phase: 'warmup', frames: completed + count }));
   }
   await page.evaluate(() => { window.profileState.phase = 'measurement'; });
+  const guestCommand = async expression => {
+    const result = await workerCommand('Runtime.evaluate', { expression, returnByValue: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'Guest profile command failed');
+    return result.result.value;
+  };
+  if (settings.guestProfile) await guestCommand('self.__setGuestProfile(true)');
   await workerCommand('Profiler.start');
   const measured = await page.evaluate(count => window.runProfileFrames(count), settings.frames);
   const { profile } = await workerCommand('Profiler.stop');
+  let guestProfile = null;
+  if (settings.guestProfile) {
+    await guestCommand('self.__setGuestProfile(false)');
+    guestProfile = JSON.parse(await guestCommand('self.__readGuestProfile()'));
+  }
   const nodes = new Map(profile.nodes.map(node => [node.id, { ...node, selfUs: 0, inclusiveUs: 0 }]));
   const parents = new Map();
   for (const node of nodes.values()) for (const child of node.children || []) parents.set(child, node.id);
@@ -274,7 +301,7 @@ try {
   }
   const all = [...functions.values()];
   const report = { measuredAt: new Date().toISOString(), settings, core, wasmSha256, browser: browser.version(),
-    target: target.url, hostBoundaryInstrumented, measured, state: await page.evaluate(() => window.profileState),
+    target: target.url, hostBoundaryInstrumented, measured, guestProfile, state: await page.evaluate(() => window.profileState),
     symbols: symbolsPath ? { file: symbolsPath, entries: symbols.size,
       sha256: createHash('sha256').update(symbolText).digest('hex'),
       provenance: 'Supply the symbol map from the same core build; Wasm and map hashes are recorded for verification.' } : null,

@@ -1,0 +1,91 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 7044fd1..a8612ca 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -25,6 +25,62 @@
+ #include "Core/PowerPC/PowerPC.h"
+ #include "Core/System.h"
+ 
++#ifdef __EMSCRIPTEN__
++// Keep the existing handler semantics while allowing full LTO to inline hot
++// primary instructions instead of crossing a WebAssembly indirect-call barrier.
++// The cached callback remains authoritative, including injected/debug handlers.
++static void DispatchBrowserInstruction(Interpreter& interpreter, UGeckoInstruction inst,
++                                       Interpreter::Instruction handler)
++{
++  switch (inst.OPCD)
++  {
++  case 10:
++    if (handler == Interpreter::cmpli)
++    {
++      Interpreter::cmpli(interpreter, inst);
++      return;
++    }
++    break;
++  case 11:
++    if (handler == Interpreter::cmpi)
++    {
++      Interpreter::cmpi(interpreter, inst);
++      return;
++    }
++    break;
++  case 16:
++    if (handler == Interpreter::bcx)
++    {
++      Interpreter::bcx(interpreter, inst);
++      return;
++    }
++    break;
++  case 18:
++    if (handler == Interpreter::bx)
++    {
++      Interpreter::bx(interpreter, inst);
++      return;
++    }
++    break;
++  case 32:
++    if (handler == Interpreter::lwz)
++    {
++      Interpreter::lwz(interpreter, inst);
++      return;
++    }
++    break;
++  case 36:
++    if (handler == Interpreter::stw)
++    {
++      Interpreter::stw(interpreter, inst);
++      return;
++    }
++    break;
++  }
++  handler(interpreter, inst);
++}
++#endif
++
+ CachedInterpreter::CachedInterpreter(Core::System& system) : JitBase(system), m_block_cache(*this)
+ {
+ }
+@@ -149,7 +205,11 @@ s32 CachedInterpreter::Interpret(PowerPC::PowerPCState& ppc_state,
+     ppc_state.pc = operands.current_pc;
+     ppc_state.npc = operands.current_pc + 4;
+   }
++#ifdef __EMSCRIPTEN__
++  DispatchBrowserInstruction(operands.interpreter, operands.inst, operands.func);
++#else
+   operands.func(operands.interpreter, operands.inst);
++#endif
+   return sizeof(AnyCallback) + sizeof(operands);
+ }
+ 
+@@ -162,7 +222,11 @@ s32 CachedInterpreter::InterpretAndCheckExceptions(
+     ppc_state.pc = operands.current_pc;
+     ppc_state.npc = operands.current_pc + 4;
+   }
++#ifdef __EMSCRIPTEN__
++  DispatchBrowserInstruction(operands.interpreter, operands.inst, operands.func);
++#else
+   operands.func(operands.interpreter, operands.inst);
++#endif
+ 
+   if ((ppc_state.Exceptions & (EXCEPTION_DSI | EXCEPTION_PROGRAM)) != 0)
+   {

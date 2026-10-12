@@ -100,6 +100,12 @@ int main() {
       const bool orphan=broken;
 #endif
       const size_t initialAllocations=allocations.size();
+#ifdef __EMSCRIPTEN__
+      // A large initial store can survive subsequent smaller orphan uploads in
+      // ANGLE, retaining megabytes of capacity per tiny draw. Browser streams
+      // must create no GPU storage until their first actual used-size upload.
+      assert(initialAllocations==0);
+#endif
       std::vector<std::vector<u8>> expected;
       for (u32 size : {16u,31u,64u,256u}) {
         const auto mapping=stream->Map(size);

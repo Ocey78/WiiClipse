@@ -14,13 +14,18 @@ COMPILER_FLAGS="-pthread"
 STACK_OVERFLOW_CHECK=2
 case "$BUILD_PROFILE" in
   baseline) ;;
-  optimized)
+  optimized|diagnostic)
     # Full LTO keeps LLVM IR across translation units; SIMD enables vectorization
     # of generic image/audio loops without selecting a native x86/ARM backend.
     # Upstream ENABLE_LTO remains off because CMake IPO may select thin LTO;
     # these explicit full-LTO flags are applied at compilation and final linking.
     COMPILER_FLAGS+=" -msimd128 -flto=full"
     STACK_OVERFLOW_CHECK=1
+    if [[ "$BUILD_PROFILE" == diagnostic ]]; then
+      # Opt-in local hot-block investigation; production builds contain no
+      # diagnostic counters or branches in the CPU's block-dispatch path.
+      COMPILER_FLAGS+=" -DDWEB_CPU_DIAGNOSTICS=1"
+    fi
     ;;
   *) echo "Unknown DWEB_BUILD_PROFILE: $BUILD_PROFILE" >&2; exit 1 ;;
 esac

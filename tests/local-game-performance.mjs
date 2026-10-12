@@ -38,15 +38,45 @@ function numericSetting(name, fallback, min, max, integer = true) {
   return value;
 }
 
-function summarizeThroughput({ frames, submissionMs, gpuCompletionMs, gpuCompletedWallMs, videoMessages, emulatedSeconds }) {
-  const submissionFps = submissionMs > 0 ? frames * 1000 / submissionMs : 0;
-  return { activeMeasuredMs: submissionMs + gpuCompletionMs, nativeFrameRequestFps: submissionFps, submissionFps,
-    gpuCompletedWallFps: gpuCompletedWallMs > 0 ? frames * 1000 / gpuCompletedWallMs : 0,
-    deliveredVideoMessagesPerSecond: gpuCompletedWallMs > 0 ? videoMessages * 1000 / gpuCompletedWallMs : 0,
-    emulationSpeedPercent: gpuCompletedWallMs > 0 ? emulatedSeconds * 100000 / gpuCompletedWallMs : 0 };
+export async function waitForGpuFence(gl, timeoutMs, {
+  now = () => performance.now(),
+  yieldToEventLoop = () => new Promise(resolve => setTimeout(resolve, 1))
+} = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('GPU fence timeout must be positive');
+  if (!gl || typeof gl.fenceSync !== 'function' || typeof gl.clientWaitSync !== 'function') {
+    throw new Error('Presentation WebGL2 context cannot provide GPU fence completion timing');
+  }
+  const begin = now();
+  if (gl.isContextLost()) throw new Error('Presentation GL context was lost before GPU completion');
+  const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (!sync) throw new Error('Could not create presentation GPU fence');
+  try {
+    gl.flush();
+    while (true) {
+      // WebGL fences cannot become observably signaled in the task that created
+      // them. Yield between nonblocking polls instead of busy-waiting or finish().
+      await yieldToEventLoop();
+      if (gl.isContextLost()) throw new Error('Presentation GL context was lost before GPU completion');
+      if (now() - begin >= timeoutMs) throw new Error(`Presentation GPU fence timed out after ${timeoutMs} ms`);
+      const status = gl.clientWaitSync(sync, 0, 0);
+      if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) return now() - begin;
+      if (status === gl.WAIT_FAILED) throw new Error('Presentation GPU fence wait failed');
+      if (status !== gl.TIMEOUT_EXPIRED) throw new Error(`Unexpected presentation GPU fence status: ${status}`);
+    }
+  } finally { gl.deleteSync(sync); }
 }
 
-if (process.argv.includes('--self-test')) {
+export function summarizeThroughput({ frames, submissionMs, gpuCompletionMs, gpuCompletedWallMs, gpuCompletionFinalized, videoMessages, emulatedSeconds }) {
+  const submissionFps = submissionMs > 0 ? frames * 1000 / submissionMs : 0;
+  const completed = gpuCompletionFinalized === true && gpuCompletedWallMs > 0;
+  return { activeMeasuredMs: submissionMs + gpuCompletionMs, nativeFrameRequestFps: submissionFps, submissionFps,
+    gpuCompletedWallFps: completed ? frames * 1000 / gpuCompletedWallMs : null,
+    deliveredVideoMessagesPerSecond: completed ? videoMessages * 1000 / gpuCompletedWallMs : null,
+    emulationSpeedPercent: completed ? emulatedSeconds * 100000 / gpuCompletedWallMs : null };
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain && process.argv.includes('--self-test')) {
   assert.deepEqual(summarizeDurations([10, 20, 30, 40]), {
     count: 4, minimumMs: 10, meanMs: 25, medianMs: 20, p90Ms: 40, p95Ms: 40, p99Ms: 40, maximumMs: 40,
     within60FpsBudget: 1, over60FpsBudget: 3
@@ -58,12 +88,12 @@ if (process.argv.includes('--self-test')) {
   assert.throws(() => parseInputSteps('[{"atFrame":0,"button":"missing"}]'), /button/);
   assert.throws(() => parseInputSteps('[{"atFrame":0,"axes":{"lx":2}}]'), /axis/);
   assert.deepEqual(summarizeThroughput({ frames: 120, submissionMs: 1000, gpuCompletionMs: 200,
-    gpuCompletedWallMs: 1500, videoMessages: 60, emulatedSeconds: 2 }), {
+    gpuCompletedWallMs: 1500, gpuCompletionFinalized: true, videoMessages: 60, emulatedSeconds: 2 }), {
     activeMeasuredMs: 1200, nativeFrameRequestFps: 120, submissionFps: 120,
     gpuCompletedWallFps: 80, deliveredVideoMessagesPerSecond: 40, emulationSpeedPercent: 200 / 1.5
   });
   console.log('Local benchmark configuration and percentile checks passed.');
-} else if (process.argv.includes('--help')) {
+} else if (isMain && process.argv.includes('--help')) {
   console.log(`Run: node tests/local-game-performance.mjs
 Required: LOCAL_GAME_PATH (a local game file; never served or uploaded)
 Optional environment settings:
@@ -74,7 +104,7 @@ Optional environment settings:
   PERF_WARMUP=30                 Unmeasured frames before timing
   PERF_FRAMES=120                Maximum measured frame acknowledgments
   PERF_SECONDS=<seconds>         Active measured-time ceiling; no default frame limit when set alone
-  PERF_TIMEOUT_MS=120000         Timeout per init, boot, or frame
+  PERF_TIMEOUT_MS=120000         Timeout per init, boot, frame, or GPU fence
   PERF_SCREENSHOT_FRAMES=0,1,30,150  Absolute completed frames since boot
   PERF_INPUT_STEPS='[{"atFrame":60,"button":"A","holdFrames":6}]'
     Also accepts buttons:{A:true,START:true}, axes:{lx:1}; steps merge, then release independently.
@@ -89,10 +119,12 @@ Optional environment settings:
   SMOKE_HEADED=1                 Alias for PERF_HEADED
 Screenshots and logs can contain game imagery; keep outputs local. Per-frame timings measure uncapped
 worker execution, message delivery, and video presentation submission. GPU-completed wall FPS includes
-GPU drains before measured screenshots and at the end, while excluding image encoding/disk/checkpoint pauses.
+asynchronous presenter WebGL2 fence waits before measured screenshots and at the end, while excluding
+image encoding/disk/checkpoint pauses. A fence follows presentation and its worker ImageBitmap import.
+Failed or timed-out fences fail the run and produce no completed-throughput figures.
 They count completed native frame requests, not display refreshes. Inspect video counts, screenshot
 hashes, and screenshots to assess actual game progress; acknowledgments alone do not prove gameplay.`);
-} else {
+} else if (isMain) {
   await runBenchmark();
 }
 
@@ -123,10 +155,11 @@ async function runBenchmark() {
   const outputDir = path.dirname(output);
   await fs.mkdir(outputDir, { recursive: true });
   const report = {
-    schemaVersion: 2, measuredAt: new Date().toISOString(), game: { name: path.basename(gamePath), sizeBytes: gameStat.size },
+    schemaVersion: 3, measuredAt: new Date().toISOString(), game: { name: path.basename(gamePath), sizeBytes: gameStat.size },
+    gpuCompletionMethod: 'presenter-webgl2-fenceSync-flush-clientWaitSync-event-loop-poll',
     root, coreRoot, requestedRenderer: renderer || 'default', requestedVideo: video,
     configuration: { warmup, maxFrames, maxSeconds, timeoutMs, screenshotFrames, inputSteps },
-    scope: 'Uncapped native worker frame requests and real video presentation. Per-frame/submission FPS can exclude queued GPU completion. GPU-completed wall FPS includes measured milestone/final presenter GL drains and loop overhead; excludes image encoding/disk/checkpoint pauses, audio playback and display pacing. Warmup GPU work is drained before the measured segment. Frame acknowledgments alone do not prove gameplay progress; inspect video counts and screenshots. No game file is served or uploaded.',
+    scope: 'Uncapped native worker frame requests and real video presentation. Per-frame/submission FPS can exclude queued GPU completion. GPU-completed wall FPS includes asynchronous milestone/final presenter WebGL2 fence waits and loop overhead; excludes image encoding/disk/checkpoint pauses, audio playback and display pacing. Presenter fences follow texture import and drawing, which depend on delivered worker ImageBitmap output; they do not prove completion of unrelated worker GPU commands or display scanout. Warmup presentation is fenced before the measured segment. Failed runs have no completed-throughput figures. Frame acknowledgments alone do not prove gameplay progress; inspect video counts and screenshots. No game file is served or uploaded.',
     status: 'starting', screenshots: [], browserErrors: [], browserConsole: [], progress: null
   };
   try { report.coreProvenance = JSON.parse(await fs.readFile(path.join(coreRoot, 'core-release.json'), 'utf8')); }
@@ -176,6 +209,7 @@ async function runBenchmark() {
       await saveReport();
     });
     await page.goto(`http://127.0.0.1:${server.address().port}/local-benchmark.html`);
+    await page.addScriptTag({ content: `window.benchmarkWaitForGpuFence = ${waitForGpuFence.toString()};` });
     await page.locator('#localGame').setInputFiles(gamePath);
     report.status = 'initializing'; await saveReport();
     const result = await page.evaluate(async config => {
@@ -183,7 +217,6 @@ async function runBenchmark() {
       const { InputState } = await import('./src/input-state.js');
       const canvas = document.querySelector('#screen');
       const presenter = new WebGLRenderer(canvas); presenter.clear();
-      if (typeof presenter.gl?.finish !== 'function') throw new Error('Presentation GL context cannot provide GPU completion timing');
       // Query a tiny independent context before any frame timing. Retain both
       // masked and unmasked values so a SwiftShader run cannot look like AMD GPU timing.
       const graphicsProbe = document.createElement('canvas');
@@ -201,7 +234,7 @@ async function runBenchmark() {
       let initMs = null; let bootMs = null; let readyInfo = null; let bootInfo = null; let lastVideo = null;
       let activeMeasuredMs = 0; let submissionMeasuredMs = 0; let gpuCompletionMs = 0;
       let measuredStart = null; let measuredExcludedPauseMs = 0; let warmupGpuDrainMs = 0;
-      let gpuCompletionFinalized = false; let capturePauseMs = 0; let logEntriesDropped = 0;
+      let gpuCompletionFinalized = false; let finalizedGpuWallMs = null; let capturePauseMs = 0; let logEntriesDropped = 0;
       const logs = []; const errors = []; const samples = []; const warmupSamples = []; const inputEvents = [];
       const totalCounters = { videoMessages: 0, videoBytes: 0, videoBitmaps: 0, audioMessages: 0, audioFrames: 0 };
       const measuredCounters = { ...totalCounters };
@@ -238,21 +271,21 @@ async function runBenchmark() {
       });
       const progress = () => ({ status: state, completedFrames, warmupCompleted: warmupSamples.length, initMs, bootMs, browserGraphics,
         readyInfo, bootInfo, activeMeasuredMs, submissionMeasuredMs, gpuCompletionMs, warmupGpuDrainMs,
-        gpuCompletedWallMs: measuredStart === null ? 0 : performance.now() - measuredStart - measuredExcludedPauseMs,
+        gpuCompletionMethod: config.gpuCompletionMethod,
+        gpuCompletedWallMs: finalizedGpuWallMs ?? (measuredStart === null ? 0 : performance.now() - measuredStart - measuredExcludedPauseMs),
         measuredExcludedPauseMs, gpuCompletionFinalized, capturePauseMs, lastVideo, totalCounters: { ...totalCounters },
         measuredCounters: { ...measuredCounters }, samples, warmupSamples, logs, errors, logEntriesDropped, inputEvents });
-      const drainGpu = () => {
-        const begin = performance.now();
-        presenter.gl.finish();
-        if (presenter.gl.isContextLost()) throw new Error('Presentation GL context was lost before GPU completion');
-        return performance.now() - begin;
-      };
+      const drainGpu = () => window.benchmarkWaitForGpuFence(presenter.gl, config.timeoutMs);
       const screenshot = async label => {
-        // Drain only at boundaries/milestones. A per-frame finish would change
-        // the pipeline being measured; screenshot encoding is excluded separately.
-        const gpuDrainMs = drainGpu();
-        if (measuredStart !== null) { gpuCompletionMs += gpuDrainMs; activeMeasuredMs += gpuDrainMs; }
-        if (label === 'final') gpuCompletionFinalized = true;
+        // Fence only boundaries/milestones, after the synchronous presenter draw
+        // and ImageBitmap texture import. Include the entire wait before starting
+        // the separately excluded screenshot pause. Failure captures are diagnostic.
+        const gpuDrainMs = label === 'failure' ? null : await drainGpu();
+        if (measuredStart !== null && gpuDrainMs !== null) { gpuCompletionMs += gpuDrainMs; activeMeasuredMs += gpuDrainMs; }
+        if (label === 'final') {
+          gpuCompletionFinalized = true;
+          finalizedGpuWallMs = performance.now() - measuredStart - measuredExcludedPauseMs;
+        }
         const begin = performance.now();
         try { await window.benchmarkScreenshot({ frame: completedFrames, label, lastVideo, phase: state, gpuDrainMs }); }
         finally {
@@ -301,7 +334,7 @@ async function runBenchmark() {
             (config.maxSeconds !== null && activeMeasuredMs >= config.maxSeconds * 1000))) break;
           state = measuring ? 'measuring' : 'warmup';
           if (measuring && measuredStart === null) {
-            warmupGpuDrainMs = drainGpu();
+            warmupGpuDrainMs = await drainGpu();
             measuredStart = performance.now();
           }
           applyInputs(completedFrames);
@@ -319,19 +352,24 @@ async function runBenchmark() {
           if (milestones.has(completedFrames)) await screenshot('milestone');
           if (completedFrames % config.progressFrames === 0) await checkpoint();
         }
-        state = 'complete';
+        state = 'finalizing';
         await screenshot('final');
+        if (fatalError) throw fatalError;
+        state = 'complete';
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started,
           emulatedSeconds: samples.reduce((sum, sample) => sum + 1 / (sample.frameRate || bootInfo.frameRate || 60), 0),
           error: null };
       } catch (error) {
-        state = 'failed'; record({ type: 'error', message: error.message });
+        state = 'failed'; gpuCompletionFinalized = false; finalizedGpuWallMs = null;
+        record({ type: 'error', message: error.message });
         try { await screenshot('failure'); } catch (captureError) { record({ type: 'screenshot-error', message: captureError.message }); }
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started, error: { message: error.message, stack: error.stack } };
       } finally { worker.terminate(); }
-    }, { warmup, maxFrames, maxSeconds, timeoutMs, progressFrames, maxLogs, renderer, video, inputSteps, screenshotFrames });
+    }, { warmup, maxFrames, maxSeconds, timeoutMs, progressFrames, maxLogs, renderer, video, inputSteps, screenshotFrames,
+      gpuCompletionMethod: report.gpuCompletionMethod });
     Object.assign(result, summarizeThroughput({ frames: result.samples.length, submissionMs: result.submissionMeasuredMs,
       gpuCompletionMs: result.gpuCompletionMs, gpuCompletedWallMs: result.gpuCompletedWallMs,
+      gpuCompletionFinalized: result.gpuCompletionFinalized && result.status === 'complete' && !result.error,
       videoMessages: result.measuredCounters.videoMessages, emulatedSeconds: result.emulatedSeconds || 0 }));
     report.result = { ...result, frameTiming: summarizeDurations(result.samples.map(sample => sample.durationMs)),
       warmupTiming: summarizeDurations(result.warmupSamples.map(sample => sample.durationMs)) };
