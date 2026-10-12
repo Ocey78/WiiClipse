@@ -24,6 +24,7 @@ const settings = {
   inputSteps: JSON.parse(process.env.PERF_INPUT_STEPS || '[]'),
   samplingIntervalUs: Number(process.env.PERF_SAMPLE_US || 1000),
   guestProfile: process.env.PERF_GUEST_PROFILE === '1',
+  capture: process.env.PERF_CAPTURE === '1',
 };
 if (!Number.isInteger(settings.warmup) || settings.warmup < 120 || settings.warmup > 12000 ||
     !Number.isInteger(settings.frames) || settings.frames < 10 || settings.frames > 2000 ||
@@ -134,7 +135,7 @@ const server = http.createServer(async (request, response) => {
   const headers = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp',
     'Cache-Control': 'no-store' };
   if (relative === 'profile.html') {
-    response.writeHead(200, { ...headers, 'Content-Type': 'text/html' }).end('<!doctype html><title>Local emulator profile</title><input id="localGame" type="file">');
+    response.writeHead(200, { ...headers, 'Content-Type': 'text/html' }).end('<!doctype html><title>Local emulator profile</title><input id="localGame" type="file"><canvas id="screen" width="640" height="480" style="display:block;width:640px;height:480px"></canvas>');
     return;
   }
   const base = relative.startsWith('core/') ? core : root;
@@ -194,6 +195,15 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/profile.html`);
   await page.evaluate(async settings => {
     const worker = new Worker('./src/dolphin-worker.js', { type: 'module' });
+    const presenter = settings.capture ? new (await import('./src/webgl-renderer.js')).WebGLRenderer(document.querySelector('#screen')) : null;
+    let lastVideo = null;
+    window.captureProfileFrame = () => {
+      if (!presenter || !lastVideo) throw new Error('No captured profile video frame is available.');
+      const metadata = { width: lastVideo.width, height: lastVideo.height, frame: state.frames };
+      presenter.presentXRGB8888(lastVideo);
+      lastVideo = null;
+      return metadata;
+    };
     const state = window.profileState = { logs: [], videos: 0, bitmaps: 0, frames: 0, phase: 'init' };
     let pending;
     const send = (message, type) => new Promise((resolve, reject) => {
@@ -206,7 +216,11 @@ try {
       // Optional ignored diagnostic shims can attach per-program completed GPU
       // draws and shader sources. Retain them locally in the profile report.
       if (data.drawProfile) (state.drawProfiles ||= []).push(data.drawProfile);
-      if (data.type === 'video') { state.videos++; state.bitmaps += Number(!!data.bitmap); data.bitmap?.close(); }
+      if (data.type === 'video') {
+        state.videos++; state.bitmaps += Number(!!data.bitmap);
+        if (presenter) { lastVideo?.bitmap?.close(); lastVideo = data; }
+        else data.bitmap?.close();
+      }
       if (data.type === 'log' || data.type === 'status') { state.logs.push(data.message); if (state.logs.length > 40) state.logs.shift(); }
       if (data.type === pending?.type) { const waiter = pending; pending = null; waiter.resolve(data); }
       else if (data.type === 'error' || data.type === 'unavailable') pending?.reject(new Error(data.message));
@@ -266,6 +280,17 @@ try {
     await page.evaluate(count => window.runProfileFrames(count), count);
     console.log(JSON.stringify({ phase: 'warmup', frames: completed + count }));
   }
+  const screenshots = [];
+  const capture = async label => {
+    if (!settings.capture) return;
+    await fs.mkdir(path.dirname(output), { recursive: true });
+    const metadata = await page.evaluate(() => window.captureProfileFrame());
+    const screenshotPath = output.replace(/\.json$/i, '') + '.' + label + '.png';
+    const bytes = await page.locator('#screen').screenshot({ path: screenshotPath });
+    screenshots.push({ label, ...metadata, path: screenshotPath,
+      sha256: createHash('sha256').update(bytes).digest('hex') });
+  };
+  await capture('start');
   await page.evaluate(() => { window.profileState.phase = 'measurement'; });
   const guestCommand = async expression => {
     const result = await workerCommand('Runtime.evaluate', { expression, returnByValue: true });
@@ -281,6 +306,7 @@ try {
     await guestCommand('self.__setGuestProfile(false)');
     guestProfile = JSON.parse(await guestCommand('self.__readGuestProfile()'));
   }
+  await capture('end');
   const nodes = new Map(profile.nodes.map(node => [node.id, { ...node, selfUs: 0, inclusiveUs: 0 }]));
   const parents = new Map();
   for (const node of nodes.values()) for (const child of node.children || []) parents.set(child, node.id);
@@ -301,7 +327,7 @@ try {
   }
   const all = [...functions.values()];
   const report = { measuredAt: new Date().toISOString(), settings, core, wasmSha256, browser: browser.version(),
-    target: target.url, hostBoundaryInstrumented, measured, guestProfile, state: await page.evaluate(() => window.profileState),
+    target: target.url, hostBoundaryInstrumented, measured, guestProfile, screenshots, state: await page.evaluate(() => window.profileState),
     symbols: symbolsPath ? { file: symbolsPath, entries: symbols.size,
       sha256: createHash('sha256').update(symbolText).digest('hex'),
       provenance: 'Supply the symbol map from the same core build; Wasm and map hashes are recorded for verification.' } : null,

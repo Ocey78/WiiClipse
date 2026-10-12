@@ -12,9 +12,10 @@ DOLPHIN_COMMIT="f8603f14e7f5a090e6693857d625a55ea9330534"
 BUILD_PROFILE="${DWEB_BUILD_PROFILE:-optimized}"
 COMPILER_FLAGS="-pthread"
 STACK_OVERFLOW_CHECK=2
+BROWSER_COMPILER=OFF
 case "$BUILD_PROFILE" in
   baseline) ;;
-  optimized|diagnostic)
+  optimized|diagnostic|compiled)
     # Full LTO keeps LLVM IR across translation units; SIMD enables vectorization
     # of generic image/audio loops without selecting a native x86/ARM backend.
     # Upstream ENABLE_LTO remains off because CMake IPO may select thin LTO;
@@ -25,6 +26,12 @@ case "$BUILD_PROFILE" in
       # Opt-in local hot-block investigation; production builds contain no
       # diagnostic counters or branches in the CPU's block-dispatch path.
       COMPILER_FLAGS+=" -DDWEB_CPU_DIAGNOSTICS=1"
+    fi
+    if [[ "$BUILD_PROFILE" == compiled ]]; then
+      # Experimental local hot-block compiler. Keep this separate from release
+      # builds until game comparisons and invalidation/fallback checks pass.
+      COMPILER_FLAGS+=" -DDWEB_BROWSER_COMPILER=1"
+      BROWSER_COMPILER=ON
     fi
     ;;
   *) echo "Unknown DWEB_BUILD_PROFILE: $BUILD_PROFILE" >&2; exit 1 ;;
@@ -53,6 +60,9 @@ git -C "$SOURCE_DIR" submodule update --init --force --recursive --depth 1 --job
 git -C "$SOURCE_DIR" submodule foreach --recursive 'git clean -fdx'
 
 cp "$NATIVE_DIR/BrowserHost.cpp" "$SOURCE_DIR/Source/Core/DolphinLibretro/BrowserHost.cpp"
+if [[ "$BROWSER_COMPILER" == ON ]]; then
+  cp "$NATIVE_DIR/browser-compiler.js" "$SOURCE_DIR/Source/Core/DolphinLibretro/BrowserCompiler.js"
+fi
 for patch in "$NATIVE_DIR"/patches/[0-9][0-9][0-9][0-9]-*.patch; do
   git -C "$SOURCE_DIR" apply "$patch"
 done
@@ -69,6 +79,7 @@ emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_CXX_FLAGS="$COMPILER_FLAGS" \
   -DCMAKE_EXE_LINKER_FLAGS="$COMPILER_FLAGS" \
   -DDWEB_STACK_OVERFLOW_CHECK="$STACK_OVERFLOW_CHECK" \
+  -DDWEB_BROWSER_COMPILER="$BROWSER_COMPILER" \
   -DENABLE_GENERIC=ON \
   -DLIBRETRO=ON \
   -DENABLE_QT=OFF \

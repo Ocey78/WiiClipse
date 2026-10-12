@@ -2,7 +2,7 @@
 
 This directory contains an experimental Emscripten build and browser host for the maintained `libretro/dolphin` frontend. The compiled core has booted original GameCube DOL and Wii WAD test programs and produced their expected video in Chromium. Broader game and device compatibility remains experimental.
 
-The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and selects the **Software Renderer**. These browser-compatible settings can be slow; actual iOS device performance is unverified.
+The source is pinned to commit `f8603f14e7f5a090e6693857d625a55ea9330534`. The browser host requests Dolphin's **Cached Interpreter**, disables dual-core CPU emulation, fastmem/fastmem arena and DSP JIT, and negotiates native WebGL2 rendering with a software fallback. The pinned release can lag behind this source; `native/core-release.json` identifies the binary actually deployed. Actual iOS device performance is unverified.
 
 ## Prerequisites
 
@@ -26,6 +26,12 @@ With an already-configured PowerShell/Git Bash environment you can also run:
 ```
 
 The native build writes `dolphin-core.js`, `dolphin-core.wasm`, its preloaded `Sys` data file, and any pthread worker files to `public/core/`. The normal web build then copies them into `dist/core/`.
+
+## Performance development
+
+`DWEB_BUILD_PROFILE=optimized` is the normal SIMD/full-LTO build. `baseline` keeps scalar compilation, and `diagnostic` adds opt-in bounded CPU block sampling. The experimental `compiled` profile enables a local runtime compiler for frequent cached-interpreter blocks. It uses the CPU worker's existing shared memory and function table; unsupported blocks and compilation failures retain interpreter execution. Diagnostic and compiled profiles cannot publish through the native workflow.
+
+Use `tests/local-game-performance.mjs` with a local file to measure completed video frames and retain screenshots for visual review. Its `--help` documents repeatable input sequences and measurement boundaries. `PERF_COMPILER=on` or `off` compares the experimental compiler on the same compiled-profile binary and records native compiler statistics before and after the measured interval. The benchmark records the exact core asset hashes; `PERF_EXPECT_WASM_SHA256` can require a particular candidate. Local game files, images, execution traces and profiles stay in ignored `native-performance/` and must not be included in releases.
 
 ## Hosting requirements
 

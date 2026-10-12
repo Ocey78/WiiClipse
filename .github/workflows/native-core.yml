@@ -11,6 +11,7 @@ on:
           - optimized
           - baseline
           - diagnostic
+          - compiled
 
 permissions:
   contents: read
@@ -88,6 +89,11 @@ jobs:
           python3 native/tests/extract-interpreter-runs.py native/.build/dolphin "$RUNNER_TEMP/interpreter-runs"
           c++ -std=c++20 -O2 -I native/.build/dolphin/Source/Core -I "$RUNNER_TEMP/interpreter-runs" native/tests/browser-interpreter-runs.cpp -o "$RUNNER_TEMP/browser-interpreter-runs"
           "$RUNNER_TEMP/browser-interpreter-runs"
+          c++ -std=c++20 -O2 -I native/.build/dolphin/Source/Core native/tests/browser-compiler-gate.cpp -o "$RUNNER_TEMP/browser-compiler-gate"
+          "$RUNNER_TEMP/browser-compiler-gate"
+          python3 native/tests/extract-compiler-descriptor.py native/.build/dolphin "$RUNNER_TEMP/compiler-descriptor"
+          c++ -std=c++20 -O2 -I native/.build/dolphin/Source/Core -I "$RUNNER_TEMP/interpreter-dispatch" -I "$RUNNER_TEMP/compiler-descriptor" native/tests/browser-compiler-descriptor.cpp -o "$RUNNER_TEMP/browser-compiler-descriptor"
+          "$RUNNER_TEMP/browser-compiler-descriptor"
           python3 native/tests/extract-video-lifecycle.py native/.build/dolphin "$RUNNER_TEMP/video-lifecycle-reference.h"
           c++ -std=c++17 -O2 -D__EMSCRIPTEN__ -D__LIBRETRO__ -I native/.build/dolphin/Source/Core -I "$RUNNER_TEMP" native/tests/browser-video-lifecycle.cpp -o "$RUNNER_TEMP/video-lifecycle"
           "$RUNNER_TEMP/video-lifecycle"
@@ -106,6 +112,9 @@ jobs:
         run: node native/tests/browser-cpu-profile.test.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium firefox
+      - name: Verify compiled blocks, fallback, and reload in the real browser core
+        if: inputs.profile == 'compiled'
+        run: node native/tests/browser-compiler-browser.mjs
       - name: Verify browser frame scheduling
         run: node tests/scheduler-browser.mjs
       - name: Verify browser renderer pixels and resizing
@@ -182,10 +191,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Package verified core and corresponding source
-        if: inputs.profile != 'diagnostic'
+        if: inputs.profile != 'diagnostic' && inputs.profile != 'compiled'
         run: node scripts/package-native-release.mjs
       - uses: actions/upload-artifact@v4
-        if: inputs.profile != 'diagnostic'
+        if: inputs.profile != 'diagnostic' && inputs.profile != 'compiled'
         with:
           name: verified-native-release
           path: native-release/
@@ -194,7 +203,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main' && inputs.profile != 'diagnostic'
+    if: github.ref == 'refs/heads/main' && inputs.profile != 'diagnostic' && inputs.profile != 'compiled'
     runs-on: ubuntu-latest
     permissions:
       contents: write

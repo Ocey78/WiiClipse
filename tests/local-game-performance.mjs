@@ -5,6 +5,27 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
+// Served only by this local diagnostic harness, never included in the app.
+export const compilerProbeSource = `
+self.addEventListener('message', ({ data = {} }) => {
+  if (data.type !== 'benchmark-compiler') return;
+  enqueue(() => {
+    try {
+      const core = adapter?.module;
+      if (typeof core?._dweb_set_browser_compiler !== 'function' ||
+          typeof core?._dweb_browser_compiler_stats !== 'function')
+        throw new Error('Compiler comparisons require a compiled-profile native core.');
+      if (data.mode === 'on' || data.mode === 'off')
+        core._dweb_set_browser_compiler(Number(data.mode === 'on'));
+      const snapshot = JSON.parse(core.cwrap('dweb_browser_compiler_stats', 'string', [])());
+      send('benchmark-compiler-result', { snapshot });
+    } catch (error) {
+      send('benchmark-compiler-result', { error: error.message });
+    }
+  });
+});
+`;
+
 function summarizeDurations(values) {
   if (!values.length) return { count: 0 };
   const sorted = [...values].sort((a, b) => a - b);
@@ -101,6 +122,8 @@ Optional environment settings:
   PERF_CORE_DIR=<directory>       Override built core assets
   PERF_RENDERER=hardware|software Requested core backend (actual backend comes from logs)
   PERF_VIDEO=bitmap|pixels        Native video delivery mode, default bitmap
+  PERF_COMPILER=on|off            Experimental compiled-core A/B switch and stats (opt-in)
+  PERF_EXPECT_WASM_SHA256=<hash>  Refuse a core with an unexpected Wasm digest
   PERF_WARMUP=30                 Unmeasured frames before timing
   PERF_FRAMES=120                Maximum measured frame acknowledgments
   PERF_SECONDS=<seconds>         Active measured-time ceiling; no default frame limit when set alone
@@ -137,6 +160,12 @@ async function runBenchmark() {
   const coreRoot = path.resolve(process.env.PERF_CORE_DIR || path.join(root, 'core'));
   await fs.access(path.join(root, 'src', 'dolphin-worker.js'));
   await fs.access(path.join(coreRoot, 'dolphin-core.js'));
+  const coreAssets = Object.fromEntries(await Promise.all(
+    ['dolphin-core.js', 'dolphin-core.wasm', 'dolphin-core.data'].map(async name =>
+      [name, createHash('sha256').update(await fs.readFile(path.join(coreRoot, name))).digest('hex')])));
+  if (process.env.PERF_EXPECT_WASM_SHA256)
+    assert.equal(coreAssets['dolphin-core.wasm'], process.env.PERF_EXPECT_WASM_SHA256,
+      'Core Wasm digest does not match the requested benchmark candidate');
   const warmup = numericSetting('PERF_WARMUP', 30, 0, 1000000);
   const maxFrames = process.env.PERF_SECONDS && !process.env.PERF_FRAMES ? null : numericSetting('PERF_FRAMES', 120, 1, 1000000);
   const maxSeconds = process.env.PERF_SECONDS ? numericSetting('PERF_SECONDS', 0, 0.001, 43200, false) : null;
@@ -147,6 +176,8 @@ async function runBenchmark() {
   assert.ok(renderer === undefined || ['hardware', 'software'].includes(renderer), 'PERF_RENDERER must be hardware or software');
   const video = process.env.PERF_VIDEO || 'bitmap';
   assert.ok(['bitmap', 'pixels'].includes(video), 'PERF_VIDEO must be bitmap or pixels');
+  const compiler = process.env.PERF_COMPILER || null;
+  assert.ok(compiler === null || ['on', 'off'].includes(compiler), 'PERF_COMPILER must be on or off');
   const inputSteps = parseInputSteps(process.env.PERF_INPUT_STEPS);
   const screenshotFrames = process.env.PERF_SCREENSHOT_FRAMES ? process.env.PERF_SCREENSHOT_FRAMES.split(',').map(Number) : [0, 1, warmup, ...(maxFrames ? [warmup + maxFrames] : [])];
   assert.ok(screenshotFrames.every(value => Number.isInteger(value) && value >= 0), 'PERF_SCREENSHOT_FRAMES must be comma-separated nonnegative integers');
@@ -157,8 +188,8 @@ async function runBenchmark() {
   const report = {
     schemaVersion: 3, measuredAt: new Date().toISOString(), game: { name: path.basename(gamePath), sizeBytes: gameStat.size },
     gpuCompletionMethod: 'presenter-webgl2-fenceSync-flush-clientWaitSync-event-loop-poll',
-    root, coreRoot, requestedRenderer: renderer || 'default', requestedVideo: video,
-    configuration: { warmup, maxFrames, maxSeconds, timeoutMs, screenshotFrames, inputSteps },
+    root, coreRoot, coreAssets, requestedRenderer: renderer || 'default', requestedVideo: video,
+    configuration: { warmup, maxFrames, maxSeconds, timeoutMs, screenshotFrames, inputSteps, compiler },
     scope: 'Uncapped native worker frame requests and real video presentation. Per-frame/submission FPS can exclude queued GPU completion. GPU-completed wall FPS includes asynchronous milestone/final presenter WebGL2 fence waits and loop overhead; excludes image encoding/disk/checkpoint pauses, audio playback and display pacing. Presenter fences follow texture import and drawing, which depend on delivered worker ImageBitmap output; they do not prove completion of unrelated worker GPU commands or display scanout. Warmup presentation is fenced before the measured segment. Failed runs have no completed-throughput figures. Frame acknowledgments alone do not prove gameplay progress; inspect video counts and screenshots. No game file is served or uploaded.',
     status: 'starting', screenshots: [], browserErrors: [], browserConsole: [], progress: null
   };
@@ -172,7 +203,8 @@ async function runBenchmark() {
       const base = relative.startsWith('core/') ? coreRoot : root;
       const file = path.resolve(base, relative.startsWith('core/') ? relative.slice(5) : relative);
       if (!file.startsWith(base + path.sep)) { response.writeHead(403).end(); return; }
-      const body = relative === 'local-benchmark.html' ? '<!doctype html><title>WiiClipse local game benchmark</title><style>body{margin:0;background:#101820;color:white;font:16px sans-serif}canvas{display:block;width:640px;height:480px}input{margin:8px}</style><input id="localGame" type="file"><canvas id="screen" width="640" height="480"></canvas>' : await fs.readFile(file);
+      let body = relative === 'local-benchmark.html' ? '<!doctype html><title>WiiClipse local game benchmark</title><style>body{margin:0;background:#101820;color:white;font:16px sans-serif}canvas{display:block;width:640px;height:480px}input{margin:8px}</style><input id="localGame" type="file"><canvas id="screen" width="640" height="480"></canvas>' : await fs.readFile(file);
+      if (compiler && relative === 'src/dolphin-worker.js') body = body.toString('utf8') + '\n' + compilerProbeSource;
       response.writeHead(200, { 'Content-Type': ({ '.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html' })[path.extname(file)] || 'application/octet-stream',
         'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cache-Control': 'no-cache' }).end(body);
     } catch { response.writeHead(404).end(); }
@@ -235,6 +267,7 @@ async function runBenchmark() {
       let activeMeasuredMs = 0; let submissionMeasuredMs = 0; let gpuCompletionMs = 0;
       let measuredStart = null; let measuredExcludedPauseMs = 0; let warmupGpuDrainMs = 0;
       let gpuCompletionFinalized = false; let finalizedGpuWallMs = null; let capturePauseMs = 0; let logEntriesDropped = 0;
+      const compilerSnapshots = [];
       const logs = []; const errors = []; const samples = []; const warmupSamples = []; const inputEvents = [];
       const totalCounters = { videoMessages: 0, videoBytes: 0, videoBitmaps: 0, audioMessages: 0, audioFrames: 0 };
       const measuredCounters = { ...totalCounters };
@@ -274,7 +307,13 @@ async function runBenchmark() {
         gpuCompletionMethod: config.gpuCompletionMethod,
         gpuCompletedWallMs: finalizedGpuWallMs ?? (measuredStart === null ? 0 : performance.now() - measuredStart - measuredExcludedPauseMs),
         measuredExcludedPauseMs, gpuCompletionFinalized, capturePauseMs, lastVideo, totalCounters: { ...totalCounters },
-        measuredCounters: { ...measuredCounters }, samples, warmupSamples, logs, errors, logEntriesDropped, inputEvents });
+        measuredCounters: { ...measuredCounters }, samples, warmupSamples, logs, errors, logEntriesDropped, inputEvents, compilerSnapshots });
+      const readCompiler = async (phase, mode = 'read') => {
+        if (!config.compiler) return;
+        const result = await send({ type: 'benchmark-compiler', mode }, 'benchmark-compiler-result');
+        if (result.error) throw new Error(result.error);
+        compilerSnapshots.push({ ...result.snapshot, phase, frame: completedFrames });
+      };
       const drainGpu = () => window.benchmarkWaitForGpuFence(presenter.gl, config.timeoutMs);
       const screenshot = async label => {
         // Fence only boundaries/milestones, after the synchronous presenter draw
@@ -326,6 +365,7 @@ async function runBenchmark() {
         const bootStart = performance.now();
         bootInfo = await send({ type: 'boot', file: document.querySelector('#localGame').files[0] }, 'booted');
         bootMs = performance.now() - bootStart; state = 'warmup';
+        await readCompiler('boot', config.compiler);
         await checkpoint();
         if (milestones.has(0)) await screenshot('boot');
         while (true) {
@@ -334,6 +374,7 @@ async function runBenchmark() {
             (config.maxSeconds !== null && activeMeasuredMs >= config.maxSeconds * 1000))) break;
           state = measuring ? 'measuring' : 'warmup';
           if (measuring && measuredStart === null) {
+            await readCompiler('measurement-start');
             warmupGpuDrainMs = await drainGpu();
             measuredStart = performance.now();
           }
@@ -354,6 +395,7 @@ async function runBenchmark() {
         }
         state = 'finalizing';
         await screenshot('final');
+        await readCompiler('measurement-end');
         if (fatalError) throw fatalError;
         state = 'complete';
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started,
@@ -365,7 +407,7 @@ async function runBenchmark() {
         try { await screenshot('failure'); } catch (captureError) { record({ type: 'screenshot-error', message: captureError.message }); }
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started, error: { message: error.message, stack: error.stack } };
       } finally { worker.terminate(); }
-    }, { warmup, maxFrames, maxSeconds, timeoutMs, progressFrames, maxLogs, renderer, video, inputSteps, screenshotFrames,
+    }, { warmup, maxFrames, maxSeconds, timeoutMs, progressFrames, maxLogs, renderer, video, inputSteps, screenshotFrames, compiler,
       gpuCompletionMethod: report.gpuCompletionMethod });
     Object.assign(result, summarizeThroughput({ frames: result.samples.length, submissionMs: result.submissionMeasuredMs,
       gpuCompletionMs: result.gpuCompletionMs, gpuCompletedWallMs: result.gpuCompletedWallMs,

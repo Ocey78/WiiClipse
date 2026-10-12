@@ -1,0 +1,19 @@
+diff --git a/Source/Core/DolphinLibretro/CMakeLists.txt b/Source/Core/DolphinLibretro/CMakeLists.txt
+--- a/Source/Core/DolphinLibretro/CMakeLists.txt
++++ b/Source/Core/DolphinLibretro/CMakeLists.txt
+@@ -72,6 +72,15 @@
+     "--preload-file"
+     "${CMAKE_SOURCE_DIR}/Data/Sys@/dolphin/system/dolphin-emu/Sys"
+   )
++  if(DWEB_BROWSER_COMPILER)
++    # Compiled blocks are native Wasm functions in this CPU worker's table.
++    # Ordinary and diagnostic builds retain their original fixed-size table.
++    target_link_options(dolphin_libretro PRIVATE
++      "-sALLOW_TABLE_GROWTH=1"
++      "--js-library"
++      "${CMAKE_CURRENT_SOURCE_DIR}/BrowserCompiler.js"
++    )
++  endif()
+ endif()
+ if(ANDROID)
+    target_sources(dolphin_libretro PRIVATE

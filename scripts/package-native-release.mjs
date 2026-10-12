@@ -47,7 +47,7 @@ const sourceFile = path.join(releaseDir, sourceName);
 const packed = spawnSync('tar', [
   '--exclude=.git', '-czf', sourceFile,
   '-C', path.join(root, 'native/.build'), 'dolphin',
-  '-C', root, 'native/BrowserHost.cpp', 'native/build-dolphin-wasm.sh',
+  '-C', root, 'native/BrowserHost.cpp', 'native/browser-compiler.js', 'native/build-dolphin-wasm.sh',
   'native/bootstrap-emsdk-and-build.sh', 'native/patches', 'native/tests',
   'native/README.md', '.github/workflows/native-core.yml',
 ], { stdio: 'inherit' });

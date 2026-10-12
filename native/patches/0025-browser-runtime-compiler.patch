@@ -1,0 +1,679 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCompilerGate.h b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCompilerGate.h
+new file mode 100644
+index 0000000..a5dd8d4
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCompilerGate.h
+@@ -0,0 +1,186 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++#include "Common/CommonTypes.h"
++
++namespace PowerPC { struct PowerPCState; }
++namespace BrowserCompiler
++{
++using Callback = s32 (*)(PowerPC::PowerPCState&, const void*);
++enum class Job : u32 { Idle, Queued, Rejected };
++// Stored before the immutable original callback stream. Never owns guest memory.
++struct Gate
++{
++  void* owner = nullptr;
++  const u8* entry = nullptr;
++  const u8* end = nullptr;
++  const u8* retained = nullptr;
++  u32 id = 0, epoch = 0, hits = 0, retry_threshold = 128, ever_promoted = 0;
++  Job job = Job::Idle;
++  Callback compiled = nullptr;
++};
++
++class Registry
++{
++public:
++  bool enabled = true;
++  u32 epoch = NextEpoch(), next_id = 0;
++  unsigned active = 0, queued = 0, compiled = 0;
++  u64 compiled_calls = 0, fallback_calls = 0, requests = 0, rejections = 0, stale_installs = 0;
++  u64 promotions = 0, evictions = 0, recompiles = 0;
++  u64 rejected_calls = 0;
++  std::unordered_set<Gate*> live;
++
++  void Add(Gate& gate)
++  {
++    gate.id = ++next_id;
++    gate.epoch = epoch;
++    gate.hits = 0;
++    gate.retry_threshold = 128;
++    gate.ever_promoted = 0;
++    gate.job = Job::Idle;
++    gate.compiled = nullptr;
++    live.insert(&gate);
++  }
++  Gate* Find(Gate* gate, u32 id, u32 expected_epoch)
++  {
++    if (expected_epoch != epoch || !live.contains(gate))
++      return nullptr;
++    return gate->id == id && gate->epoch == epoch ? gate : nullptr;
++  }
++  bool Install(Gate* gate, u32 id, u32 expected_epoch, Callback callback)
++  {
++    gate = Find(gate, id, expected_epoch);
++    if (!enabled || active || !gate || !callback || gate->job != Job::Queued || gate->compiled)
++    {
++      ++stale_installs;
++      return false;
++    }
++    gate->compiled = callback;
++    gate->job = Job::Idle;
++    --queued;
++    ++compiled;
++    ++promotions;
++    if (gate->ever_promoted++)
++      ++recompiles;
++    return true;
++  }
++  void Failed(Gate* gate, u32 id, u32 expected_epoch)
++  {
++    if (auto* found = Find(gate, id, expected_epoch); found && found->job == Job::Queued)
++    {
++      found->job = Job::Rejected;
++      --queued;
++      ++rejections;
++      DropCopy(*found);
++    }
++  }
++  void Retire(Gate& gate)
++  {
++    if (!live.erase(&gate))
++      return;
++    if (gate.compiled)
++    {
++      retired.push_back(static_cast<u32>(reinterpret_cast<uintptr_t>(gate.compiled)));
++      gate.compiled = nullptr;
++      --compiled;
++    }
++    if (gate.job == Job::Queued)
++      --queued;
++    gate.job = Job::Rejected;
++    DropCopy(gate);
++  }
++  bool Evict(Gate* gate, u32 id, u32 expected_epoch, Callback callback)
++  {
++    gate = Find(gate, id, expected_epoch);
++    if (active || !gate || !gate->compiled || gate->compiled != callback)
++      return false;
++    gate->compiled = nullptr;
++    gate->job = Job::Idle;
++    gate->hits = 0;
++    gate->retry_threshold = 4096;
++    --compiled;
++    ++evictions;
++    DropCopy(*gate);
++    return true; // JS releases only after this acknowledgement.
++  }
++  bool Retain(Gate& gate)
++  {
++    if (gate.retained)
++      return true;
++    const auto length = static_cast<std::size_t>(gate.end - gate.entry);
++    if (!length || length > 65536 || copy_bytes + length > 528 * 65536)
++      return false;
++    Copy copy{std::make_unique<u8[]>(length), length};
++    std::memcpy(copy.bytes.get(), gate.entry, length);
++    gate.retained = copy.bytes.get();
++    copy_bytes += length;
++    copies.emplace(&gate, std::move(copy));
++    return true;
++  }
++  void DropCopy(Gate& gate)
++  {
++    gate.retained = nullptr;
++    if (auto found = copies.find(&gate); found != copies.end())
++    {
++      old_copies.push_back(std::move(found->second));
++      copies.erase(found);
++    }
++  }
++  // Invalidate every async identity before any code address can be reused.
++  // Live blocks are retained for a same-core disable/enable A/B comparison.
++  void Reset()
++  {
++    epoch = NextEpoch();
++    for (auto* gate : live)
++    {
++      gate->epoch = epoch;
++      gate->hits = 0;
++      gate->retry_threshold = 128;
++      gate->job = Job::Idle;
++      gate->compiled = nullptr;
++      DropCopy(*gate);
++    }
++    compiled = queued = 0;
++    pending_clear = true;
++    retired.clear();
++  }
++  template <typename Release, typename Clear>
++  void Drain(Release release, Clear clear)
++  {
++    if (active || (!pending_clear && retired.empty() && old_copies.empty()))
++      return;
++    if (pending_clear)
++    {
++      pending_clear = false;
++      clear(epoch);
++      retired.clear();
++    }
++    else
++    {
++      for (u32 slot : retired)
++        release(slot);
++      retired.clear();
++    }
++    for (const auto& copy : old_copies)
++      copy_bytes -= copy.length;
++    old_copies.clear();
++  }
++private:
++  bool pending_clear = false;
++  std::vector<u32> retired;
++  struct Copy { std::unique_ptr<u8[]> bytes; std::size_t length; };
++  std::unordered_map<Gate*, Copy> copies; // Promotion/retirement only, never the execution path.
++  std::vector<Copy> old_copies;
++  std::size_t copy_bytes = 0;
++  inline static u32 global_epoch = 0;
++  static u32 NextEpoch() { if (++global_epoch == 0) ++global_epoch; return global_epoch; }
++};
++}
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 6ad33d9..439aea7 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -120,9 +120,314 @@ CachedInterpreter::CachedInterpreter(Core::System& system) : JitBase(system), m_
+ 
+ CachedInterpreter::~CachedInterpreter() = default;
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++#include <emscripten.h>
++#include <emscripten/threading.h>
++extern "C" int dweb_browser_compile_request(const char*, u32, u32, u32);
++extern "C" void dweb_browser_compile_release(u32);
++extern "C" void dweb_browser_compile_clear(u32);
++static CachedInterpreter* s_browser_compiler_owner = nullptr;
++
++// UGeckoInstruction is a C++ aggregate passed indirectly in the wasm32 ABI.
++// Keep that private by-value copy in C++, not in the retained callback payload.
++extern "C" EMSCRIPTEN_KEEPALIVE void dweb_browser_compiler_instruction(u32 address, u32 word,
++                                                                       u32 handler)
++{
++  auto& interpreter = *reinterpret_cast<Interpreter*>(uintptr_t(address));
++  const UGeckoInstruction instruction{word};
++  reinterpret_cast<Interpreter::Instruction>(uintptr_t(handler))(interpreter, instruction);
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE int dweb_browser_compiler_install(u32 address, u32 id, u32 epoch,
++                                                                 u32 slot)
++{
++  if (!s_browser_compiler_owner || !s_browser_compiler_owner->BrowserCompilerOnOwnerThread())
++    return 0;
++  auto& registry = s_browser_compiler_owner->BrowserCompilerRegistry();
++  return registry.Install(reinterpret_cast<BrowserCompiler::Gate*>(uintptr_t(address)), id, epoch,
++                          reinterpret_cast<BrowserCompiler::Callback>(uintptr_t(slot)));
++}
++extern "C" EMSCRIPTEN_KEEPALIVE void dweb_browser_compiler_failed(u32 address, u32 id, u32 epoch)
++{
++  if (s_browser_compiler_owner && s_browser_compiler_owner->BrowserCompilerOnOwnerThread())
++    s_browser_compiler_owner->BrowserCompilerRegistry().Failed(
++        reinterpret_cast<BrowserCompiler::Gate*>(uintptr_t(address)), id, epoch);
++}
++extern "C" EMSCRIPTEN_KEEPALIVE int dweb_browser_compiler_evict(u32 address, u32 id, u32 epoch,
++                                                               u32 slot)
++{
++  if (!s_browser_compiler_owner || !s_browser_compiler_owner->BrowserCompilerOnOwnerThread())
++    return 0;
++  auto& registry = s_browser_compiler_owner->BrowserCompilerRegistry();
++  const bool result = registry.Evict(reinterpret_cast<BrowserCompiler::Gate*>(uintptr_t(address)),
++                                     id, epoch,
++                                     reinterpret_cast<BrowserCompiler::Callback>(uintptr_t(slot)));
++  s_browser_compiler_owner->DrainBrowserCompiler();
++  return result;
++}
++extern "C" EMSCRIPTEN_KEEPALIVE void dweb_set_browser_compiler(int enabled)
++{
++  if (!s_browser_compiler_owner || !s_browser_compiler_owner->BrowserCompilerOnOwnerThread())
++    return;
++  auto& registry = s_browser_compiler_owner->BrowserCompilerRegistry();
++  registry.enabled = enabled != 0;
++  if (!enabled)
++    registry.Reset();
++  s_browser_compiler_owner->DrainBrowserCompiler();
++}
++extern "C" EMSCRIPTEN_KEEPALIVE const char* dweb_browser_compiler_stats()
++{
++  static std::string json;
++  if (!s_browser_compiler_owner)
++  {
++    json = "{\"enabled\":false,\"compiled\":0,\"compiledCalls\":0,\"nativeFallbackCalls\":0}";
++    return json.c_str();
++  }
++  const auto& r = s_browser_compiler_owner->BrowserCompilerRegistry();
++  std::ostringstream out;
++  out << "{\"enabled\":" << (r.enabled ? "true" : "false") << ",\"epoch\":" << r.epoch
++      << ",\"gates\":" << r.live.size() << ",\"pending\":" << r.queued
++      << ",\"compiled\":" << r.compiled << ",\"compiledCalls\":" << r.compiled_calls
++      << ",\"nativeFallbackCalls\":" << r.fallback_calls << ",\"requests\":" << r.requests
++      << ",\"rejectedFallbackCalls\":" << r.rejected_calls
++      << ",\"rejected\":" << r.rejections << ",\"errors\":" << r.rejections
++      << ",\"promoted\":" << r.promotions << ",\"evictions\":" << r.evictions
++      << ",\"recompiles\":" << r.recompiles
++      << ",\"staleInstalls\":" << r.stale_installs << '}';
++  json = out.str();
++  return json.c_str();
++}
++
++bool CachedInterpreter::BrowserCompilerOnOwnerThread() const
++{
++  return m_browser_compiler_main_runtime && m_browser_compiler_thread == std::this_thread::get_id() &&
++         !m_system.IsDualCoreMode();
++}
++void CachedInterpreter::DrainBrowserCompiler()
++{
++  m_browser_compiler.Drain(dweb_browser_compile_release, dweb_browser_compile_clear);
++}
++void CachedInterpreter::RetireBrowserCompilerBlock(const JitBlock& block)
++{
++  if (block.near_end - block.normalEntry <
++      static_cast<ptrdiff_t>(sizeof(AnyCallback) + sizeof(BrowserCompilerGate)))
++    return;
++  if (*reinterpret_cast<const AnyCallback*>(block.normalEntry) !=
++      AnyCallbackCast(RunBrowserCompilerGate))
++    return;
++  auto& gate = *reinterpret_cast<BrowserCompilerGate*>(block.normalEntry + sizeof(AnyCallback));
++  m_browser_compiler.Retire(gate);
++  DrainBrowserCompiler();
++}
++
++s32 CachedInterpreter::RunBrowserCompilerGate(PowerPC::PowerPCState& ppc_state,
++                                             const BrowserCompilerGate& operands)
++{
++  auto& gate = const_cast<BrowserCompilerGate&>(operands);
++  auto& cached = *static_cast<CachedInterpreter*>(gate.owner);
++  auto& registry = cached.m_browser_compiler;
++  ++registry.active;
++  const bool allowed = registry.enabled && cached.BrowserCompilerOnOwnerThread() &&
++                       !cached.IsDebuggingEnabled() && !cached.IsProfilingEnabled() &&
++                       !cached.m_system.GetCPU().IsStepping();
++  if (allowed && gate.compiled)
++  {
++    ++registry.compiled_calls;
++    gate.compiled(ppc_state, gate.retained);
++  }
++  else
++  {
++    ++registry.fallback_calls;
++    if (gate.job == BrowserCompiler::Job::Rejected)
++      ++registry.rejected_calls;
++    if (allowed && registry.queued < 16 && gate.job == BrowserCompiler::Job::Idle &&
++        ++gate.hits >= (registry.compiled >= 512 && gate.retry_threshold < 2048 ?
++                           2048u : gate.retry_threshold))
++    {
++      gate.hits = 0;
++      const auto descriptor = registry.Retain(gate) ? cached.DescribeBrowserCompilerBlock(gate) :
++                                                    std::string{};
++      if (descriptor.empty())
++      {
++        gate.job = BrowserCompiler::Job::Rejected;
++        ++registry.rejections;
++        registry.DropCopy(gate);
++      }
++      else
++      {
++        ++registry.requests;
++        const int result = dweb_browser_compile_request(
++            descriptor.c_str(), static_cast<u32>(reinterpret_cast<uintptr_t>(&gate)), gate.id,
++            gate.epoch);
++        if (result > 0)
++        {
++          gate.job = BrowserCompiler::Job::Queued;
++          ++registry.queued;
++        }
++        else if (result < 0)
++        {
++          gate.job = BrowserCompiler::Job::Rejected;
++          ++registry.rejections;
++          registry.DropCopy(gate);
++        }
++        else
++        {
++          gate.retry_threshold = 4096;
++          registry.DropCopy(gate);
++        }
++      }
++    }
++    cached.ExecuteCallbackStream(gate.entry);
++  }
++  --registry.active;
++  cached.DrainBrowserCompiler();
++  return 0;
++}
++std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompilerGate& gate) const
++{
++  if (!gate.retained || !gate.entry || gate.end <= gate.entry)
++    return {};
++  const u8* cursor = gate.retained;
++  const u8* end = cursor + (gate.end - gate.entry);
++  const auto number = [](auto pointer) {
++    return static_cast<u32>(reinterpret_cast<uintptr_t>(pointer));
++  };
++  std::ostringstream out;
++  out << "{\"version\":1,\"gate\":" << number(&gate) << ",\"blockID\":" << gate.id
++      << ",\"epoch\":" << gate.epoch << ",\"entry\":" << number(cursor)
++      << ",\"instructionBridge\":" << number(dweb_browser_compiler_instruction)
++      << ",\"end\":" << number(end) << ",\"state\":{\"gpr\":"
++      << offsetof(PowerPC::PowerPCState, gpr) << ",\"pc\":" << offsetof(PowerPC::PowerPCState, pc)
++      << ",\"npc\":" << offsetof(PowerPC::PowerPCState, npc) << "},\"ops\":[";
++  unsigned records = 0;
++  bool terminal = false;
++  const auto comma = [&] { if (records++) out << ','; };
++  const auto allowed_instruction = [](u32 word) {
++    const u32 sub = (word >> 1) & 1023;
++    return (word >> 26) != 31 || (sub != 54 && sub != 86 && sub != 470 && sub != 982 && sub != 1014);
++  };
++  const auto instruction = [&](Interpreter::Instruction handler, Interpreter* interpreter,
++                               u32 word, bool write_pc, u32 pc) {
++    if (!handler || !interpreter || !allowed_instruction(word))
++      return false;
++    comma();
++    out << "{\"kind\":\"instruction\",\"handler\":" << number(handler)
++        << ",\"interpreter\":" << number(interpreter) << ",\"word\":" << word << ",\"pc\":";
++    if (write_pc) out << pc; else out << "null";
++    out << '}';
++    return true;
++  };
++  while (cursor < end && records < 2048)
++  {
++    if (end - cursor < static_cast<ptrdiff_t>(sizeof(AnyCallback)))
++      return {};
++    const auto callback = *reinterpret_cast<const AnyCallback*>(cursor);
++    const u8* payload = cursor + sizeof(callback);
++    std::size_t size = 0;
++    if (callback == AnyCallbackCast(RunBrowserIntegerOps))
++    {
++      if (end - payload < static_cast<ptrdiff_t>(sizeof(BrowserInteger::Header)))
++        return {};
++      const auto& header = *reinterpret_cast<const BrowserInteger::Header*>(payload);
++      if (!header.count || header.count > 32)
++        return {};
++      size = BrowserInteger::PayloadSize(header.count);
++      if (end - payload < static_cast<ptrdiff_t>(size))
++        return {};
++      const auto* ops = reinterpret_cast<const BrowserInteger::Op*>(payload + sizeof(header));
++      comma();
++      out << "{\"kind\":\"integer\",\"ops\":[";
++      for (u32 i = 0; i < header.count; ++i)
++      {
++        const auto& op = ops[i];
++        if (static_cast<unsigned>(op.kind) > 24 || op.dst > 31 || op.a > 31 || op.b > 31)
++          return {};
++        if (i) out << ',';
++        out << "{\"kind\":" << static_cast<unsigned>(op.kind) << ",\"value\":" << op.value
++            << ",\"dst\":" << unsigned(op.dst) << ",\"a\":" << unsigned(op.a)
++            << ",\"b\":" << unsigned(op.b) << '}';
++      }
++      out << "]}";
++    }
++    else if (callback == AnyCallbackCast(RunBrowserInterpretOps))
++    {
++      if (end - payload < static_cast<ptrdiff_t>(sizeof(BrowserInterpret::Header)))
++        return {};
++      const auto& header = *reinterpret_cast<const BrowserInterpret::Header*>(payload);
++      if (!header.count || header.count > 32)
++        return {};
++      size = BrowserInterpret::PayloadSize(header.count);
++      if (end - payload < static_cast<ptrdiff_t>(size))
++        return {};
++      const auto* ops = reinterpret_cast<const BrowserInterpret::Op*>(payload + sizeof(header));
++      for (u32 i = 0; i < header.count; ++i)
++        if (!instruction(ops[i].handler, header.interpreter, ops[i].instruction, false, 0))
++          return {};
++    }
++    else if (callback == AnyCallbackCast(Interpret<false>) ||
++             callback == AnyCallbackCast(Interpret<true>))
++    {
++      size = sizeof(InterpretOperands);
++      if (end - payload < static_cast<ptrdiff_t>(size))
++        return {};
++      const auto& op = *reinterpret_cast<const InterpretOperands*>(payload);
++      if (!instruction(op.func, &op.interpreter, op.inst.hex,
++                       callback == AnyCallbackCast(Interpret<true>), op.current_pc))
++        return {};
++    }
++    else if (callback == AnyCallbackCast(InterpretAndCheckExceptions<false>) ||
++             callback == AnyCallbackCast(InterpretAndCheckExceptions<true>) ||
++             callback == AnyCallbackCast(EndBlock<false>))
++    {
++      terminal = callback == AnyCallbackCast(EndBlock<false>);
++      size = terminal ? sizeof(EndBlockOperands<false>) :
++                        sizeof(InterpretAndCheckExceptionsOperands);
++      if (end - payload < static_cast<ptrdiff_t>(size))
++        return {};
++      if (!terminal && !allowed_instruction(
++                           reinterpret_cast<const InterpretAndCheckExceptionsOperands*>(payload)->inst.hex))
++        return {};
++      comma();
++      out << "{\"kind\":\"callback\",\"role\":\"" << (terminal ? "end" : "checked")
++          << "\",\"handler\":" << number(callback) << ",\"payload\":" << number(payload)
++          << ",\"distance\":" << sizeof(callback) + size << ",\"terminal\":"
++          << (terminal ? "true" : "false") << '}';
++    }
++    else
++    {
++      // HLE, debugger, FPU checks, broken/idle/cache loops and unknown callbacks
++      // remain on the exact original stream, including all state observers.
++      return {};
++    }
++    cursor = payload + size;
++    if (terminal)
++      break;
++  }
++  if (!terminal || cursor != end || records > 2048)
++    return {};
++  out << "]}";
++  return out.str();
++}
++
++s32 CachedInterpreter::RunBrowserCompilerGate(std::ostream& stream,
++                                             const BrowserCompilerGate& operands)
++{
++  stream << "Browser compiler gate (id=" << operands.id << ", hits=" << operands.hits << ")\n";
++  return sizeof(AnyCallback) + sizeof(operands);
++}
++#endif
++
+ void CachedInterpreter::Init()
+ {
+   RefreshConfig();
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  m_browser_compiler_thread = std::this_thread::get_id();
++  m_browser_compiler_main_runtime = emscripten_is_main_runtime_thread();
++  m_browser_compiler.enabled = true;
++  s_browser_compiler_owner = this;
++  m_browser_compiler.Reset();
++  DrainBrowserCompiler();
++#endif
+ 
+   AllocCodeSpace(CODE_SIZE);
+   ResetFreeMemoryRanges();
+@@ -138,6 +443,12 @@ void CachedInterpreter::Init()
+ 
+ void CachedInterpreter::Shutdown()
+ {
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  m_browser_compiler.enabled = false;
++  m_browser_compiler.Reset();
++  DrainBrowserCompiler();
++  s_browser_compiler_owner = nullptr;
++#endif
+   m_block_cache.Shutdown();
+ }
+ 
+@@ -153,11 +464,26 @@ void CachedInterpreter::ExecuteOneBlock()
+     return;
+   }
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  ExecuteCallbackStream(normal_entry);
++}
++
++void CachedInterpreter::ExecuteCallbackStream(const u8* normal_entry)
++{
++#endif
++
+   auto& ppc_state = m_ppc_state;
+   while (true)
+   {
+     const auto callback = *reinterpret_cast<const AnyCallback*>(normal_entry);
+     const u8* payload = normal_entry + sizeof(callback);
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++    if (callback == AnyCallbackCast(RunBrowserCompilerGate))
++    {
++      RunBrowserCompilerGate(ppc_state, *reinterpret_cast<const BrowserCompilerGate*>(payload));
++      break;
++    }
++#endif
+ #ifdef __EMSCRIPTEN__
+     if (callback == AnyCallbackCast(RunBrowserInterpretOps))
+     {
+@@ -554,6 +880,15 @@ void CachedInterpreter::Jit(u32 em_address, bool clear_cache_and_retry_on_failur
+       // Record what memory region was used so we know what to free if this block gets invalidated.
+       b->near_end = GetWritableCodePtr();
+       b->far_begin = b->far_end = nullptr;
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++      if (*reinterpret_cast<const AnyCallback*>(b->normalEntry) ==
++          AnyCallbackCast(RunBrowserCompilerGate))
++      {
++        auto& gate = *reinterpret_cast<BrowserCompilerGate*>(b->normalEntry + sizeof(AnyCallback));
++        gate.end = b->near_end;
++        m_browser_compiler.Add(gate);
++      }
++#endif
+ 
+       // Mark the memory region that this code block uses in the RangeSizeSet.
+       if (b->near_begin != b->near_end)
+@@ -680,6 +1015,17 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+   auto& cpu = m_system.GetCPU();
+   auto& breakpoints = power_pc.GetBreakPoints();
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  if (BrowserCompilerOnOwnerThread() && !IsDebuggingEnabled() && !IsProfilingEnabled() &&
++      !cpu.IsStepping())
++  {
++    BrowserCompilerGate gate{};
++    gate.owner = this;
++    gate.entry = GetCodePtr() + sizeof(AnyCallback) + sizeof(gate);
++    Write(RunBrowserCompilerGate, gate);
++  }
++#endif
++
+ #ifdef __EMSCRIPTEN__
+   if (WriteBrowserCacheFlushLoop())
+     return !HasWriteFailed();
+@@ -811,6 +1157,10 @@ std::size_t CachedInterpreter::DisassembleFarCode(const JitBlock& block, std::os
+ 
+ void CachedInterpreter::ClearCache()
+ {
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  m_browser_compiler.Reset();
++  DrainBrowserCompiler();
++#endif
+   m_block_cache.Clear();
+   m_block_cache.ClearRangesToFree();
+   ClearCodeSpace();
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+index 9a60aa9..6193846 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+@@ -11,6 +11,11 @@
+ #ifdef __EMSCRIPTEN__
+ #include "Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h"
+ #include "Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h"
++#if defined(DWEB_BROWSER_COMPILER)
++#include <thread>
++#include <string>
++#include "Core/PowerPC/CachedInterpreter/BrowserCompilerGate.h"
++#endif
+ #endif
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h"
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
+@@ -62,9 +67,28 @@ public:
+   const char* GetName() const override { return "Cached Interpreter"; }
+   const CommonAsmRoutinesBase* GetAsmRoutines() override { return nullptr; }
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  BrowserCompiler::Registry& BrowserCompilerRegistry() { return m_browser_compiler; }
++  bool BrowserCompilerOnOwnerThread() const;
++  void DrainBrowserCompiler();
++  void RetireBrowserCompilerBlock(const JitBlock& block);
++#endif
++
+ private:
+   void ExecuteOneBlock();
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  using BrowserCompilerGate = BrowserCompiler::Gate;
++  BrowserCompiler::Registry m_browser_compiler;
++  std::thread::id m_browser_compiler_thread;
++  bool m_browser_compiler_main_runtime = false;
++  void ExecuteCallbackStream(const u8* normal_entry);
++  static s32 RunBrowserCompilerGate(PowerPC::PowerPCState& ppc_state,
++                                   const BrowserCompilerGate& operands);
++  static s32 RunBrowserCompilerGate(std::ostream& stream, const BrowserCompilerGate& operands);
++  std::string DescribeBrowserCompilerBlock(const BrowserCompilerGate& gate) const;
++#endif
++
+   bool HandleFunctionHooking(u32 address);
+   void WriteEndBlock();
+ 
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.cpp
+index 3b4c4a0..9db296a 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.cpp
+@@ -4,6 +4,9 @@
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h"
+ 
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++#include "Core/PowerPC/CachedInterpreter/CachedInterpreter.h"
++#endif
+ #include "Core/PowerPC/JitCommon/JitBase.h"
+ 
+ CachedInterpreterBlockCache::CachedInterpreterBlockCache(JitBase& jit) : JitBaseBlockCache{jit}
+@@ -18,6 +21,9 @@ void CachedInterpreterBlockCache::Init()
+ 
+ void CachedInterpreterBlockCache::DestroyBlock(JitBlock& block)
+ {
++#if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
++  static_cast<CachedInterpreter&>(m_jit).RetireBrowserCompilerBlock(block);
++#endif
+   JitBaseBlockCache::DestroyBlock(block);
+ 
+   if (block.near_begin != block.near_end)
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+index d94e891..3e66b4d 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+@@ -152,6 +152,9 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream&
+       LOOKUP_KV(CachedInterpreter::RunBrowserIntegerOps),
+       LOOKUP_KV(CachedInterpreter::RunBrowserCacheFlushLoop),
+       LOOKUP_KV(CachedInterpreter::RunBrowserInterpretOps),
++#ifdef DWEB_BROWSER_COMPILER
++      LOOKUP_KV(CachedInterpreter::RunBrowserCompilerGate),
++#endif
+ #endif
+   });
+ 

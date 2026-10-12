@@ -5,10 +5,11 @@ Usage: python3 extract-callback-dispatch.py DOLPHIN_SOURCE OUTPUT_DIRECTORY
 from pathlib import Path
 import runpy
 import sys
+from source_extraction import without_browser_compiler
 
 runpy.run_path(str(Path(__file__).with_name("extract-interpreter-dispatch.py")), run_name="__main__")
 source = Path(sys.argv[1]) / "Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp"
-text = source.read_text()
+text = without_browser_compiler(source.read_text())
 output = Path(sys.argv[2])
 
 
