@@ -225,4 +225,5 @@ int main()
   for (u32 opcode : {32u, 36u})
     AllPaths((opcode << 26) | (2u << 21) | (1u << 16), opcode == 32 ? Interpreter::lwz : Interpreter::stw, seed);
   std::printf("Verified %u original/browser cached callback paths, handlers and exception boundaries\n", checked);
+  return 0;
 }

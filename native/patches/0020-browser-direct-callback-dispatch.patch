@@ -1,0 +1,37 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index b1d0aee..2032c5e 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -177,6 +177,32 @@ void CachedInterpreter::ExecuteOneBlock()
+       Interpret<true>(ppc_state, *reinterpret_cast<const InterpretOperands*>(payload));
+       normal_entry = payload + sizeof(InterpretOperands);
+     }
++#ifdef __EMSCRIPTEN__
++    else if (callback == AnyCallbackCast(EndBlock<false>))
++    {
++      if (const auto distance =
++              EndBlock<false>(ppc_state, *reinterpret_cast<const EndBlockOperands<false>*>(payload)))
++        normal_entry += distance;
++      else
++        break;
++    }
++    else if (callback == AnyCallbackCast(InterpretAndCheckExceptions<false>))
++    {
++      if (const auto distance = InterpretAndCheckExceptions<false>(
++              ppc_state, *reinterpret_cast<const InterpretAndCheckExceptionsOperands*>(payload)))
++        normal_entry += distance;
++      else
++        break;
++    }
++    else if (callback == AnyCallbackCast(InterpretAndCheckExceptions<true>))
++    {
++      if (const auto distance = InterpretAndCheckExceptions<true>(
++              ppc_state, *reinterpret_cast<const InterpretAndCheckExceptionsOperands*>(payload)))
++        normal_entry += distance;
++      else
++        break;
++    }
++#endif
+     else
+     {
+       if (const auto distance = callback(ppc_state, payload))
