@@ -38,6 +38,14 @@ function numericSetting(name, fallback, min, max, integer = true) {
   return value;
 }
 
+function summarizeThroughput({ frames, submissionMs, gpuCompletionMs, gpuCompletedWallMs, videoMessages, emulatedSeconds }) {
+  const submissionFps = submissionMs > 0 ? frames * 1000 / submissionMs : 0;
+  return { activeMeasuredMs: submissionMs + gpuCompletionMs, nativeFrameRequestFps: submissionFps, submissionFps,
+    gpuCompletedWallFps: gpuCompletedWallMs > 0 ? frames * 1000 / gpuCompletedWallMs : 0,
+    deliveredVideoMessagesPerSecond: gpuCompletedWallMs > 0 ? videoMessages * 1000 / gpuCompletedWallMs : 0,
+    emulationSpeedPercent: gpuCompletedWallMs > 0 ? emulatedSeconds * 100000 / gpuCompletedWallMs : 0 };
+}
+
 if (process.argv.includes('--self-test')) {
   assert.deepEqual(summarizeDurations([10, 20, 30, 40]), {
     count: 4, minimumMs: 10, meanMs: 25, medianMs: 20, p90Ms: 40, p95Ms: 40, p99Ms: 40, maximumMs: 40,
@@ -49,6 +57,11 @@ if (process.argv.includes('--self-test')) {
   assert.throws(() => parseInputSteps('[{"atFrame":-1,"button":"A"}]'), /atFrame/);
   assert.throws(() => parseInputSteps('[{"atFrame":0,"button":"missing"}]'), /button/);
   assert.throws(() => parseInputSteps('[{"atFrame":0,"axes":{"lx":2}}]'), /axis/);
+  assert.deepEqual(summarizeThroughput({ frames: 120, submissionMs: 1000, gpuCompletionMs: 200,
+    gpuCompletedWallMs: 1500, videoMessages: 60, emulatedSeconds: 2 }), {
+    activeMeasuredMs: 1200, nativeFrameRequestFps: 120, submissionFps: 120,
+    gpuCompletedWallFps: 80, deliveredVideoMessagesPerSecond: 40, emulationSpeedPercent: 200 / 1.5
+  });
   console.log('Local benchmark configuration and percentile checks passed.');
 } else if (process.argv.includes('--help')) {
   console.log(`Run: node tests/local-game-performance.mjs
@@ -74,8 +87,9 @@ Optional environment settings:
   PLAYWRIGHT_MODULE=<module>     Optional Playwright module path
   PERF_HEADED=1                  Show browser window
   SMOKE_HEADED=1                 Alias for PERF_HEADED
-Screenshots and logs can contain game imagery; keep outputs local. Frame timings measure uncapped
-worker execution, message delivery, and video presentation submission, excluding screenshot pauses.
+Screenshots and logs can contain game imagery; keep outputs local. Per-frame timings measure uncapped
+worker execution, message delivery, and video presentation submission. GPU-completed wall FPS includes
+GPU drains before measured screenshots and at the end, while excluding image encoding/disk/checkpoint pauses.
 They count completed native frame requests, not display refreshes. Inspect video counts, screenshot
 hashes, and screenshots to assess actual game progress; acknowledgments alone do not prove gameplay.`);
 } else {
@@ -109,10 +123,10 @@ async function runBenchmark() {
   const outputDir = path.dirname(output);
   await fs.mkdir(outputDir, { recursive: true });
   const report = {
-    schemaVersion: 1, measuredAt: new Date().toISOString(), game: { name: path.basename(gamePath), sizeBytes: gameStat.size },
+    schemaVersion: 2, measuredAt: new Date().toISOString(), game: { name: path.basename(gamePath), sizeBytes: gameStat.size },
     root, coreRoot, requestedRenderer: renderer || 'default', requestedVideo: video,
     configuration: { warmup, maxFrames, maxSeconds, timeoutMs, screenshotFrames, inputSteps },
-    scope: 'Uncapped completed native worker frame requests, message delivery and real video presentation submission. Excludes screenshot/checkpoint pauses, audio playback and display pacing. Frame acknowledgments alone do not prove gameplay progress; inspect delivered video counts and screenshots. No game file is served or uploaded.',
+    scope: 'Uncapped native worker frame requests and real video presentation. Per-frame/submission FPS can exclude queued GPU completion. GPU-completed wall FPS includes measured milestone/final presenter GL drains and loop overhead; excludes image encoding/disk/checkpoint pauses, audio playback and display pacing. Warmup GPU work is drained before the measured segment. Frame acknowledgments alone do not prove gameplay progress; inspect video counts and screenshots. No game file is served or uploaded.',
     status: 'starting', screenshots: [], browserErrors: [], browserConsole: [], progress: null
   };
   try { report.coreProvenance = JSON.parse(await fs.readFile(path.join(coreRoot, 'core-release.json'), 'utf8')); }
@@ -169,6 +183,7 @@ async function runBenchmark() {
       const { InputState } = await import('./src/input-state.js');
       const canvas = document.querySelector('#screen');
       const presenter = new WebGLRenderer(canvas); presenter.clear();
+      if (typeof presenter.gl?.finish !== 'function') throw new Error('Presentation GL context cannot provide GPU completion timing');
       // Query a tiny independent context before any frame timing. Retain both
       // masked and unmasked values so a SwiftShader run cannot look like AMD GPU timing.
       const graphicsProbe = document.createElement('canvas');
@@ -184,7 +199,9 @@ async function runBenchmark() {
       const worker = new Worker('./src/dolphin-worker.js', { type: 'module' });
       let pending = null; let fatalError = null; let state = 'initializing'; let completedFrames = 0;
       let initMs = null; let bootMs = null; let readyInfo = null; let bootInfo = null; let lastVideo = null;
-      let activeMeasuredMs = 0; let capturePauseMs = 0; let logEntriesDropped = 0;
+      let activeMeasuredMs = 0; let submissionMeasuredMs = 0; let gpuCompletionMs = 0;
+      let measuredStart = null; let measuredExcludedPauseMs = 0; let warmupGpuDrainMs = 0;
+      let gpuCompletionFinalized = false; let capturePauseMs = 0; let logEntriesDropped = 0;
       const logs = []; const errors = []; const samples = []; const warmupSamples = []; const inputEvents = [];
       const totalCounters = { videoMessages: 0, videoBytes: 0, videoBitmaps: 0, audioMessages: 0, audioFrames: 0 };
       const measuredCounters = { ...totalCounters };
@@ -220,12 +237,34 @@ async function runBenchmark() {
         try { worker.postMessage(message); } catch (error) { waiter.reject(error); }
       });
       const progress = () => ({ status: state, completedFrames, warmupCompleted: warmupSamples.length, initMs, bootMs, browserGraphics,
-        readyInfo, bootInfo, activeMeasuredMs, capturePauseMs, lastVideo, totalCounters: { ...totalCounters },
+        readyInfo, bootInfo, activeMeasuredMs, submissionMeasuredMs, gpuCompletionMs, warmupGpuDrainMs,
+        gpuCompletedWallMs: measuredStart === null ? 0 : performance.now() - measuredStart - measuredExcludedPauseMs,
+        measuredExcludedPauseMs, gpuCompletionFinalized, capturePauseMs, lastVideo, totalCounters: { ...totalCounters },
         measuredCounters: { ...measuredCounters }, samples, warmupSamples, logs, errors, logEntriesDropped, inputEvents });
-      const screenshot = async label => {
+      const drainGpu = () => {
         const begin = performance.now();
-        await window.benchmarkScreenshot({ frame: completedFrames, label, lastVideo, phase: state });
-        capturePauseMs += performance.now() - begin;
+        presenter.gl.finish();
+        if (presenter.gl.isContextLost()) throw new Error('Presentation GL context was lost before GPU completion');
+        return performance.now() - begin;
+      };
+      const screenshot = async label => {
+        // Drain only at boundaries/milestones. A per-frame finish would change
+        // the pipeline being measured; screenshot encoding is excluded separately.
+        const gpuDrainMs = drainGpu();
+        if (measuredStart !== null) { gpuCompletionMs += gpuDrainMs; activeMeasuredMs += gpuDrainMs; }
+        if (label === 'final') gpuCompletionFinalized = true;
+        const begin = performance.now();
+        try { await window.benchmarkScreenshot({ frame: completedFrames, label, lastVideo, phase: state, gpuDrainMs }); }
+        finally {
+          const pause = performance.now() - begin;
+          capturePauseMs += pause;
+          if (measuredStart !== null) measuredExcludedPauseMs += pause;
+        }
+      };
+      const checkpoint = async () => {
+        const begin = performance.now();
+        try { await window.benchmarkCheckpoint(progress()); }
+        finally { if (measuredStart !== null) measuredExcludedPauseMs += performance.now() - begin; }
       };
       const milestones = new Set(config.screenshotFrames);
       const input = new InputState();
@@ -250,17 +289,21 @@ async function runBenchmark() {
         const initStart = performance.now();
         readyInfo = await send({ type: 'init', renderer: config.renderer, video: config.video }, 'ready');
         initMs = performance.now() - initStart; state = 'booting';
-        await window.benchmarkCheckpoint(progress());
+        await checkpoint();
         const bootStart = performance.now();
         bootInfo = await send({ type: 'boot', file: document.querySelector('#localGame').files[0] }, 'booted');
         bootMs = performance.now() - bootStart; state = 'warmup';
-        await window.benchmarkCheckpoint(progress());
+        await checkpoint();
         if (milestones.has(0)) await screenshot('boot');
         while (true) {
           const measuring = completedFrames >= config.warmup;
           if (measuring && ((config.maxFrames !== null && samples.length >= config.maxFrames) ||
             (config.maxSeconds !== null && activeMeasuredMs >= config.maxSeconds * 1000))) break;
           state = measuring ? 'measuring' : 'warmup';
+          if (measuring && measuredStart === null) {
+            warmupGpuDrainMs = drainGpu();
+            measuredStart = performance.now();
+          }
           applyInputs(completedFrames);
           const before = { ...totalCounters };
           const frameStart = performance.now();
@@ -270,19 +313,16 @@ async function runBenchmark() {
           const sample = { frame: completedFrames, durationMs, frameRate: acknowledgment.frameRate,
             videoMessages: totalCounters.videoMessages - before.videoMessages, audioFrames: totalCounters.audioFrames - before.audioFrames };
           if (measuring) {
-            samples.push(sample); activeMeasuredMs += durationMs;
+            samples.push(sample); submissionMeasuredMs += durationMs; activeMeasuredMs += durationMs;
             for (const key of Object.keys(measuredCounters)) measuredCounters[key] += totalCounters[key] - before[key];
           } else warmupSamples.push(sample);
           if (milestones.has(completedFrames)) await screenshot('milestone');
-          if (completedFrames % config.progressFrames === 0) await window.benchmarkCheckpoint(progress());
+          if (completedFrames % config.progressFrames === 0) await checkpoint();
         }
         state = 'complete';
         await screenshot('final');
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started,
-          nativeFrameRequestFps: activeMeasuredMs ? samples.length * 1000 / activeMeasuredMs : 0,
-          deliveredVideoMessagesPerSecond: activeMeasuredMs ? measuredCounters.videoMessages * 1000 / activeMeasuredMs : 0,
           emulatedSeconds: samples.reduce((sum, sample) => sum + 1 / (sample.frameRate || bootInfo.frameRate || 60), 0),
-          emulationSpeedPercent: activeMeasuredMs ? samples.reduce((sum, sample) => sum + 100000 / (sample.frameRate || bootInfo.frameRate || 60), 0) / activeMeasuredMs : 0,
           error: null };
       } catch (error) {
         state = 'failed'; record({ type: 'error', message: error.message });
@@ -290,6 +330,9 @@ async function runBenchmark() {
         return { ...progress(), browserGraphics, wallElapsedMs: performance.now() - started, error: { message: error.message, stack: error.stack } };
       } finally { worker.terminate(); }
     }, { warmup, maxFrames, maxSeconds, timeoutMs, progressFrames, maxLogs, renderer, video, inputSteps, screenshotFrames });
+    Object.assign(result, summarizeThroughput({ frames: result.samples.length, submissionMs: result.submissionMeasuredMs,
+      gpuCompletionMs: result.gpuCompletionMs, gpuCompletedWallMs: result.gpuCompletedWallMs,
+      videoMessages: result.measuredCounters.videoMessages, emulatedSeconds: result.emulatedSeconds || 0 }));
     report.result = { ...result, frameTiming: summarizeDurations(result.samples.map(sample => sample.durationMs)),
       warmupTiming: summarizeDurations(result.warmupSamples.map(sample => sample.durationMs)) };
     report.status = result.status;
@@ -297,7 +340,9 @@ async function runBenchmark() {
     report.visualEvidence = { screenshotCount: report.screenshots.length, distinctScreenshotHashes: new Set(report.screenshots.map(image => image.sha256)).size,
       interpretation: 'Different screenshot hashes show visible changes only; verify the images for game loading, menus, gameplay or failure. Repeated images may be expected at a static menu.' };
     await saveReport();
-    console.log(JSON.stringify({ status: report.status, nativeFrameRequestFps: result.nativeFrameRequestFps,
+    console.log(JSON.stringify({ status: report.status, nativeFrameRequestFps: result.nativeFrameRequestFps, submissionFps: result.submissionFps,
+      gpuCompletedWallFps: result.gpuCompletedWallFps, gpuCompletionMs: result.gpuCompletionMs,
+      gpuCompletedWallMs: result.gpuCompletedWallMs, gpuCompletionFinalized: result.gpuCompletionFinalized,
       deliveredVideoMessagesPerSecond: result.deliveredVideoMessagesPerSecond, emulationSpeedPercent: result.emulationSpeedPercent,
       measuredFrames: result.samples.length, browserGraphics: result.browserGraphics, frameTiming: report.result.frameTiming,
       visualEvidence: report.visualEvidence, error: result.error, report: output }));

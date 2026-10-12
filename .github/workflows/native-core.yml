@@ -81,6 +81,8 @@ jobs:
         run: node --test native/tests/browser-media.test.mjs
       - name: Verify browser uniform block alignment
         run: node native/tests/browser-uniforms.test.mjs
+      - name: Verify browser streaming buffer uploads
+        run: node native/tests/browser-streaming.test.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium firefox
       - name: Verify browser frame scheduling

@@ -1,0 +1,24 @@
+diff --git a/Source/Core/VideoBackends/OGL/OGLStreamBuffer.cpp b/Source/Core/VideoBackends/OGL/OGLStreamBuffer.cpp
+--- a/Source/Core/VideoBackends/OGL/OGLStreamBuffer.cpp
++++ b/Source/Core/VideoBackends/OGL/OGLStreamBuffer.cpp
+@@ -379,6 +379,13 @@
+ // Chooses the best streaming method based on the supported extensions and known issues
+ std::unique_ptr<StreamBuffer> StreamBuffer::Create(u32 type, u32 size)
+ {
++#ifdef __EMSCRIPTEN__
++  // WebGL has no base-vertex or mapped-buffer streaming. Reusing offset zero
++  // with BufferSubData can wait for every previous draw using that storage.
++  // BufferData orphans on each upload while retaining the required zero offset
++  // for vertex/index streams and uniform blocks.
++  return std::make_unique<BufferData>(type, size);
++#else
+   // without basevertex support, only streaming methods whith uploads everything to zero works fine:
+   if (!g_ogl_config.bSupportsGLBaseVertex)
+   {
+@@ -418,5 +425,6 @@
+ 
+   // default fallback, should work everywhere, but isn't the best way to do this job
+   return std::make_unique<MapAndOrphan>(type, size);
++#endif
+ }
+ }  // namespace OGL
