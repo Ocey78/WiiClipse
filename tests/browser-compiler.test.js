@@ -240,6 +240,55 @@ test('original FPU guard role exits on zero and continues only when FPU is avail
   }
 });
 
+test('retained native interpret runs preserve payload updates and integer/checked boundaries', async () => {
+  const env = environment();
+  const u = n => { const bytes=[]; do {const b=n&127;n>>>=7;bytes.push(b|(n?128:0));} while(n);return bytes; };
+  const sec = (id,bytes) => [id,...u(bytes.length),...bytes];
+  // Native iii run reads the retained Header's count and each operand word.
+  // It returns zero on a simulated early exit, otherwise the exact run stride.
+  const ops=[32,1,40,2,0,69,4,64,65,0,15,11,
+    2,64,3,64,32,2,32,1,40,2,4,79,13,1,
+    32,0,32,0,40,2,4,32,1,32,2,65,8,108,106,40,2,16,106,54,2,4,
+    32,2,65,1,106,33,2,12,0,11,11,
+    32,1,40,2,4,65,8,108,65,16,106,11];
+  const code=[1,1,127,...ops];
+  const bytes=Uint8Array.from([0,97,115,109,1,0,0,0,
+    ...sec(1,[1,96,2,127,127,1,127]),
+    ...sec(2,[1,3,101,110,118,6,109,101,109,111,114,121,2,3,2,8]),
+    ...sec(3,[1,0]), ...sec(7,[1,3,114,117,110,0,0]), ...sec(10,[1,...u(code.length),...code])]);
+  env.table.set(1,(await WebAssembly.instantiate(bytes,{env:{memory:env.memory}})).instance.exports.run);
+  const runRecord=(payload,count)=>({kind:'callback',role:'interpret-run',handler:1,payload,count,distance:16+count*8,terminal:false});
+  const words=new Uint32Array(env.memory.buffer);
+  const writeRun=(payload,count)=>{words[payload/4]=1;words[payload/4+1]=count;for(let i=0;i<count;++i)words[payload/4+4+i*2]=i+1;};
+  for(const count of [1,2,8,32]) {
+    writeRun(512,count); writeRun(1024,2);
+    const run=await env.compiler.compile(descriptor([runRecord(512,count),integer(1,5,1,1),runRecord(1024,2),integer(0,99,2)]));
+    words[1]=3;words[2]=0;words[32]=123;words[33]=456;
+    assert.equal(run(0,0),0);assert.equal(words[1],3+count*(count+1)/2+5+3);assert.equal(words[2],99);
+    assert.equal(words[32],123);assert.equal(words[33],456);
+    words[128]=0;words[1]=3;words[2]=0;
+    assert.equal(run(0,0),0);assert.equal(words[1],3);assert.equal(words[2],0);
+    // A fresh helper import carries the whole native run, with no scalar bridge.
+    const prepared=env.compiler.encode(descriptor([runRecord(512,count)]));
+    assert.equal(WebAssembly.Module.imports(new WebAssembly.Module(prepared.bytes)).filter(x=>x.kind==='function').length,2);
+  }
+  const checkedBytes=Uint8Array.from([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,
+    3,2,1,0,7,7,1,3,114,117,110,0,0,10,6,1,4,0,32,1,11]);
+  env.table.grow(1);env.table.set(2,(await WebAssembly.instantiate(checkedBytes)).instance.exports.run);
+  writeRun(512,2);
+  for(const payload of [0,16]) {
+    const run=await env.compiler.compile(descriptor([runRecord(512,2),
+      {kind:'callback',role:'checked',handler:2,payload,distance:16,terminal:false},integer(0,99,2)]));
+    words[1]=3;words[2]=0;assert.equal(run(0,0),0);assert.equal(words[1],6);assert.equal(words[2],payload?99:0);
+  }
+  for(const bad of [{count:0},{count:33},{count:1.5},{count:undefined},{terminal:true},{distance:20}]) {
+    const d=descriptor([{...runRecord(512,2),...bad}]);
+    assert.equal(env.compiler.request(JSON.stringify(d),d.gate,d.blockID,d.epoch),-1);
+  }
+  const oversized=descriptor(Array.from({length:129},()=>runRecord(512,32)));
+  assert.equal(env.compiler.request(JSON.stringify(oversized),oversized.gate,oversized.blockID,oversized.epoch),-1);
+});
+
 test('invalid descriptors and unsupported helpers leave original path untouched', () => {
   const env = environment();
   for (const d of [descriptor([{ kind: 'hle' }]), descriptor([integer(25)]),

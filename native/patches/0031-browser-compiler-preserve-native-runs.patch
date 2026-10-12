@@ -1,0 +1,24 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index bd21582..b847ba0 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -374,9 +374,18 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+       if (end - payload < static_cast<ptrdiff_t>(size))
+         return {};
+       const auto* ops = reinterpret_cast<const BrowserInterpret::Op*>(payload + sizeof(header));
++      if (!header.interpreter)
++        return {};
+       for (u32 i = 0; i < header.count; ++i)
+-        if (!instruction(ops[i].handler, header.interpreter, ops[i].instruction, false, 0))
++        if (!ops[i].handler || !allowed_instruction(ops[i].instruction))
+           return {};
++      // Preserve the original retained run and its direct native dispatch.
++      // Flattening it would add a cross-module call for every instruction.
++      comma();
++      out << "{\"kind\":\"callback\",\"role\":\"interpret-run\",\"handler\":"
++          << number(callback) << ",\"payload\":" << number(payload)
++          << ",\"distance\":" << sizeof(callback) + size
++          << ",\"count\":" << header.count << ",\"terminal\":false}";
+     }
+     else if (callback == AnyCallbackCast(Interpret<false>) ||
+              callback == AnyCallbackCast(Interpret<true>))

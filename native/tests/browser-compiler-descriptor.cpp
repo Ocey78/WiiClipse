@@ -161,9 +161,42 @@ int main()
   batch.ops[0]={Interpreter::lwz,0x80610000};batch.ops[1]={Interpreter::stw,0x90610004};
   run.AddRaw(CachedInterpreter::AnyCallbackCast(CachedInterpreter::RunBrowserInterpretOps),&batch,BrowserInterpret::PayloadSize(2));run.End();
   const auto flat=Describe(cached,run,registry,gate);
+#ifdef TEST_BROWSER_COMPILER_RUN
+  assert(flat.find("\"role\":\"interpret-run\"")!=std::string::npos);
+  assert(flat.find("\"count\":2,\"terminal\":false")!=std::string::npos);
+  assert(flat.find("\"distance\":"+std::to_string(sizeof(CachedInterpreter::AnyCallback)+BrowserInterpret::PayloadSize(2)))!=std::string::npos);
+  assert(flat.find("\"payload\":"+std::to_string(Address(gate.retained+sizeof(CachedInterpreter::AnyCallback))))!=std::string::npos);
+  assert(flat.find("\"kind\":\"instruction\"")==std::string::npos);
+  run.bytes.fill(0);assert(cached.DescribeBrowserCompilerBlock(gate)==flat);
+#else
   assert(flat.find("\"word\":2153840640")!=std::string::npos);
   assert(flat.find("\"word\":2422276100")!=std::string::npos);
+#endif
   registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+#ifdef TEST_BROWSER_COMPILER_RUN
+  for(unsigned count=1;count<=32;++count) {
+    Program preserved;batch.header.interpreter=&fixture.interpreter;batch.header.count=count;
+    for(unsigned i=0;i<count;++i)batch.ops[i]={i&1?Interpreter::stw:Interpreter::lwz,i&1?0x90610004u:0x80610000u};
+    preserved.AddRaw(CachedInterpreter::AnyCallbackCast(CachedInterpreter::RunBrowserInterpretOps),&batch,BrowserInterpret::PayloadSize(count));preserved.End();
+    const auto descriptor=Describe(cached,preserved,registry,gate);
+    assert(descriptor.find("\"count\":"+std::to_string(count)+",\"terminal\":false")!=std::string::npos);
+    assert(descriptor.find("\"handler\":"+std::to_string(static_cast<u32>(reinterpret_cast<uintptr_t>(CachedInterpreter::RunBrowserInterpretOps))))!=std::string::npos);
+    registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+  }
+  for(unsigned reject=0;reject<6;++reject) {
+    Program bad;batch.header.interpreter=&fixture.interpreter;batch.header.count=2;
+    batch.ops[0]={Interpreter::lwz,0x80610000};batch.ops[1]={Interpreter::stw,0x90610004};
+    if(reject==0)batch.header.count=0;
+    if(reject==1)batch.header.count=33;
+    if(reject==2)batch.header.interpreter=nullptr;
+    if(reject==3)batch.ops[1].handler=nullptr;
+    if(reject==4)batch.ops[1].instruction=0x7c0018ac;
+    bad.AddRaw(CachedInterpreter::AnyCallbackCast(CachedInterpreter::RunBrowserInterpretOps),&batch,BrowserInterpret::PayloadSize(reject==5?1:2));
+    if(reject!=5)bad.End();
+    assert(Describe(cached,bad,registry,gate).empty());
+    registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+  }
+#endif
   // Actual production Gate execution: threshold, capacity before serialization,
   // owner/debug/step guards, compiled dispatch, reset during an active callback.
   Program executable;executable.Add(CachedInterpreter::Interpret<false>,load);executable.End();

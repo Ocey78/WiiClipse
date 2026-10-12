@@ -1,0 +1,14 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 14d8668..bd21582 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -135,7 +135,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void dweb_browser_compiler_instruction(u32 addre
+ {
+   auto& interpreter = *reinterpret_cast<Interpreter*>(uintptr_t(address));
+   const UGeckoInstruction instruction{word};
+-  reinterpret_cast<Interpreter::Instruction>(uintptr_t(handler))(interpreter, instruction);
++  DispatchBrowserInstruction(interpreter, instruction,
++                             reinterpret_cast<Interpreter::Instruction>(uintptr_t(handler)));
+ }
+ 
+ extern "C" EMSCRIPTEN_KEEPALIVE int dweb_browser_compiler_install(u32 address, u32 id, u32 epoch,

@@ -141,11 +141,14 @@ addToLibrary({
             [0x10], u(helper(descriptor.instructionBridge, 2)));
           ++opCount;
         } else if (op.kind === 'callback') {
-          // Native descriptors contain only the fixed-stride checked/FPU guards
-          // and EndBlock. Arbitrary AnyCallback return distances cannot be
+          // Native descriptors contain only validated original instruction runs,
+          // fixed-stride checked/FPU guards and EndBlock. Arbitrary return distances cannot be
           // linearized; unknown roles and unterminated blocks are rejected.
           require(uint(op.payload) && uint(op.distance) && op.distance > 0 && (op.distance & 3) === 0 &&
-            (op.role === 'checked' || op.role === 'fpu' || op.role === 'end') && op.terminal === (op.role === 'end'));
+            (op.role === 'checked' || op.role === 'fpu' || op.role === 'interpret-run' || op.role === 'end') && op.terminal === (op.role === 'end'));
+          if (op.role === 'interpret-run') {
+            require(Number.isInteger(op.count) && op.count > 0 && op.count <= 32 && op.distance === 16 + op.count * 8);
+          }
           require(!op.terminal || record === descriptor.ops.length - 1);
           var inlineEnd = op.role === 'end' && uint(op.cycles) &&
             ['downcount', 'mmcr0', 'mmcr1'].every(function(field) { return state[field] !== undefined; });
@@ -162,7 +165,7 @@ addToLibrary({
           }
           emit([0x20, 0], constant(op.payload), [0x10], u(helper(op.handler, 1)),
             [0x45, 0x04, 0x40], constant(0), [0x0f, 0x0b]);
-          ++opCount;
+          opCount += op.role === 'interpret-run' ? op.count : 1;
         } else throw new Error('Unsupported browser callback');
         require(opCount <= 4096 && code.length <= 262144);
       }
