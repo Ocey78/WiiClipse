@@ -1,11 +1,11 @@
 const CACHE_PREFIX = `wiiclipse:${self.registration.scope}:`;
-const CACHE = `${CACHE_PREFIX}v4`;
+const CACHE = `${CACHE_PREFIX}v6`;
 const ASSETS = [
-  './', './index.html', './styles.css', './manifest.webmanifest',
+  './', './index.html', './styles.css', './manifest.webmanifest', './icon.svg',
   './src/bootstrap.js', './src/app.js', './src/capabilities.js', './src/game-file.js', './src/input-state.js',
   './src/dolphin-worker-client.js', './src/dolphin-worker.js', './src/dolphin-wasm-adapter.js',
   './src/webgl-renderer.js', './src/audio-sink.js', './src/audio-ring.js', './src/audio-worklet.js',
-  './src/frame-scheduler.js'
+  './src/frame-scheduler.js', './src/input-controller.js', './src/session-state.js'
 ];
 self.addEventListener('install', (event) => event.waitUntil((async () => {
   const cache = await caches.open(CACHE);

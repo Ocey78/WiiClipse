@@ -49,6 +49,12 @@ jobs:
           npm run test:browser
         env:
           SMOKE_BROWSER: webkit
+      - name: Verify player controls and mobile layout
+        run: node tests/player-browser.mjs
+      - name: Verify WebKit player controls and mobile layout
+        run: node tests/player-browser.mjs
+        env:
+          SMOKE_BROWSER: webkit
       - name: Verify WebGL pixel uploads and resizing
         run: node tests/renderer-browser.mjs
       - name: Install Firefox virtual display, graphics, and audio output

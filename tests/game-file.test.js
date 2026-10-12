@@ -35,3 +35,11 @@ test('rejects unsupported files truthfully', () => {
     assert.ok(file.reason);
   }
 });
+
+test('empty or invalid-size files cannot be sent to the native loader', () => {
+  for (const bytes of [0, -1, Infinity, NaN]) {
+    const file = classifyGameFile('game.iso', bytes);
+    assert.equal(file.supported, false);
+    assert.match(file.reason, /empty|size/i);
+  }
+});

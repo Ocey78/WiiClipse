@@ -2,35 +2,57 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-  <meta name="theme-color" content="#0b1020">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#121418">
+  <meta name="description" content="WiiClipse browser emulator.">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="stylesheet" href="./styles.css">
-  <title>Dolphin Web</title>
+  <title>WiiClipse</title>
 </head>
 <body>
 <main class="app">
-  <header>
-    <div><h1>Dolphin Web</h1><p>iOS 18+ • client-side Dolphin/WASM</p></div>
-    <div id="coreState" class="core-state">Loading Dolphin core…</div>
-  </header>
-  <section class="screen-wrap">
-    <canvas id="screen"></canvas>
-    <div id="status" class="status">Loading Dolphin core…</div>
-  </section>
-  <section class="library">
+  <header><h1>WiiClipse</h1><span id="coreState" class="core-state" role="status">Loading Dolphin core…</span></header>
+  <section id="dropZone" class="file-picker" aria-label="Game file">
     <input id="gameFile" type="file" accept=".iso,.gcm,.dol,.elf,.wad" hidden>
-    <button id="chooseGame" class="primary">Choose Game</button>
-    <div class="game"><strong id="gameName">No game selected</strong><span id="gameMeta">GameCube ISO/GCM, homebrew DOL/ELF, and bootable Wii WAD files stay on this device.</span></div>
-    <button id="play" disabled>Play</button>
+    <button id="chooseGame">Open game</button>
+    <div class="file-info"><strong id="gameName">No file selected</strong><span id="gameMeta">ISO, GCM, DOL, ELF or Wii WAD. You can also drop a file here.</span></div>
   </section>
-  <section><h2>Browser capabilities</h2><div id="capabilities" class="badges"></div></section>
-  <section class="controller" aria-label="GameCube touch controller">
-    <div class="dpad"><button data-button="UP">▲</button><div><button data-button="LEFT">◀</button><button data-button="RIGHT">▶</button></div><button data-button="DOWN">▼</button></div>
-    <div class="center"><button data-button="START">START</button></div>
-    <div class="face"><button class="x" data-button="X">X</button><button class="y" data-button="Y">Y</button><button class="a" data-button="A">A</button><button class="b" data-button="B">B</button></div>
+  <section id="playerPanel" class="player-panel" aria-label="Emulator">
+    <div class="player-heading"><span id="sessionState">Loading</span><div class="performance"><span><strong id="fps">—</strong> FPS</span><span id="speed">—</span></div></div>
+    <div id="playerSurface" class="screen-wrap">
+      <canvas id="screen" aria-label="Game display"></canvas>
+      <div id="emptyScreen" class="empty-screen"><h2 id="emptyTitle">No game running</h2><p id="emptyHint">Open a game file to begin.</p></div>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">Loading Dolphin core…</div>
+    <div class="toolbar">
+      <div class="session-actions"><button id="play" class="primary" disabled>Play</button><button id="pause" disabled>Pause</button><button id="stop" disabled>Stop</button></div>
+      <div class="display-actions"><label for="aspectRatio" class="sr-only">Aspect ratio</label><select id="aspectRatio"><option value="4/3">4:3</option><option value="16/9">16:9</option></select><button id="fullscreen" class="icon-button" aria-label="Expand player" title="Expand player">⛶</button></div>
+    </div>
+    <div class="settings">
+      <div class="audio-controls"><button id="mute" aria-label="Mute audio" aria-pressed="false">Mute</button><label class="sr-only" for="volume">Volume</label><input id="volume" type="range" min="0" max="100" value="80"><output id="volumeValue" for="volume">80%</output></div>
+      <label class="touch-toggle"><input id="showTouch" type="checkbox">Touch controls</label>
+    </div>
+    <section id="touchControls" class="controller" aria-label="GameCube touch controller" hidden>
+      <div class="shoulder-controls"><button data-button="L" aria-label="Left trigger">L</button><button data-button="Z" aria-label="Z button">Z</button><button data-button="R" aria-label="Right trigger">R</button></div>
+      <div class="touch-layout">
+        <div class="main-stick stick-group"><div class="stick-zone" data-stick="left" role="group" aria-label="Main stick, drag to move"><div class="stick-knob"></div></div><span>Main stick</span></div>
+        <div class="face" role="group" aria-label="Action buttons"><button class="x" data-button="X">X</button><button class="y" data-button="Y">Y</button><button class="a" data-button="A">A</button><button class="b" data-button="B">B</button></div>
+        <div class="dpad" role="group" aria-label="D-pad"><button class="up" data-button="UP" aria-label="D-pad up">▲</button><button class="left" data-button="LEFT" aria-label="D-pad left">◀</button><button class="right" data-button="RIGHT" aria-label="D-pad right">▶</button><button class="down" data-button="DOWN" aria-label="D-pad down">▼</button></div>
+        <button class="start-button" data-button="START">Start</button>
+        <div class="c-stick stick-group"><div class="stick-zone" data-stick="right" role="group" aria-label="C stick, drag to move"><div class="stick-knob"></div></div><span>C stick</span></div>
+      </div>
+    </section>
   </section>
-  <footer>Cached-interpreter CPU • WebGL2 display • local files • no server streaming • <a href="https://github.com/Ocey78/WiiClipse">Source and builds</a></footer>
+  <section class="save-row" aria-label="Save progress"><span id="saveState" role="status" aria-live="polite">Checking save storage…</span><button id="saveNow" disabled>Save progress</button></section>
+  <details id="controlsGuide"><summary>Controls & help</summary><div class="help-content">
+    <dl><div><dt>Main stick</dt><dd>W A S D</dd></div><div><dt>D-pad</dt><dd>Arrow keys</dd></div><div><dt>A / B / X / Y</dt><dd>J / K / U / I</dd></div><div><dt>L / R / Z</dt><dd>Q / E / Space</dd></div><div><dt>C stick: up / left / down / right</dt><dd>T / F / G / H</dd></div><div><dt>Start</dt><dd>Enter</dd></div></dl>
+    <p id="gamepadState" role="status">Connect a gamepad and press a button. Triggers control L/R; the right bumper controls Z.</p>
+    <p>Game files stay on your device. Save progress stores in-game saves in this browser, not a save state. Clearing site data removes saves.</p>
+    <p>WAD files must be bootable Wii channels. Game compatibility and speed vary. Wii Remote motion controls are not supported.</p>
+  </div></details>
+  <details><summary>Browser details</summary><div id="capabilities" class="badges"></div></details>
+  <footer><a href="https://github.com/Ocey78/WiiClipse" target="_blank" rel="noopener noreferrer">GitHub</a><span>Powered by Dolphin</span></footer>
 </main>
 <script type="module" src="./src/bootstrap.js"></script>
 </body>

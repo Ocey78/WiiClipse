@@ -20,7 +20,7 @@ const root = path.resolve('dist');
 let server;
 let url = process.env.SMOKE_URL;
 if (!url) {
-  const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webmanifest': 'application/manifest+json', '.wasm': 'application/wasm' };
+  const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.wasm': 'application/wasm' };
   server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
     if (!pathname.startsWith('/WiiClipse/')) { response.writeHead(404).end(); return; }

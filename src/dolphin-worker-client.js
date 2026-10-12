@@ -12,11 +12,15 @@ export class DolphinWorkerClient {
     this.rejectInit = null;
     this.resolveBoot = null;
     this.rejectBoot = null;
+    this.pendingRequests = new Map();
+    this.nextRequestId = 1;
+    this.unloading = null;
     worker.addEventListener('message', (event) => this.#onMessage(event.data || {}));
     worker.addEventListener?.('error', (event) => {
       const error = new Error(event?.message || 'Dolphin worker failed.');
       this.#fail(error);
     });
+    worker.addEventListener?.('messageerror', () => this.#fail(new Error('Dolphin worker communication failed.')));
   }
 
   #fail(error, recoverable = false) {
@@ -29,6 +33,10 @@ export class DolphinWorkerClient {
     this.rejectBoot?.(error);
     this.resolveBoot = null;
     this.rejectBoot = null;
+    if (!recoverable) {
+      for (const { reject } of this.pendingRequests.values()) reject(error);
+      this.pendingRequests.clear();
+    }
     this.callbacks.onError?.(error);
   }
 
@@ -57,6 +65,22 @@ export class DolphinWorkerClient {
         this.framePending = false;
         this.callbacks.onFrameDone?.(message);
         break;
+      case 'save-status':
+        this.callbacks.onSaveStatus?.({ state: message.state, message: message.message || '' });
+        break;
+      case 'saves-synced':
+      case 'unloaded': {
+        const request = this.pendingRequests.get(message.requestId);
+        if (!request || request.acknowledgment !== message.type) break;
+        if (message.type === 'unloaded') {
+          this.running = false;
+          this.framePending = false;
+        }
+        this.pendingRequests.delete(message.requestId);
+        if (message.ok === false) request.reject(new Error(message.message || 'Dolphin save operation failed.'));
+        else request.resolve(message);
+        break;
+      }
       case 'video':
         if (!this.callbacks.onVideo) message.bitmap?.close();
         else {
@@ -85,6 +109,7 @@ export class DolphinWorkerClient {
 
   isReady() { return this.ready; }
   bootGame(file) {
+    if (this.unloading) return this.unloading.then(() => this.bootGame(file));
     if (!this.ready) return Promise.reject(new Error('Dolphin core is not ready.'));
     if (this.booting) return Promise.reject(new Error('A game is already booting.'));
     this.running = false;
@@ -106,9 +131,21 @@ export class DolphinWorkerClient {
   }
   unloadGame() {
     this.running = false;
-    if (this.ready) this.worker.postMessage({ type: 'unload' });
+    if (this.unloading) return this.unloading;
+    this.unloading = this.#request('unload', 'unloaded').finally(() => { this.unloading = null; });
+    return this.unloading;
   }
-  syncSaves() { if (this.ready) this.worker.postMessage({ type: 'sync-saves' }); }
+  syncSaves() { return this.#request('sync-saves', 'saves-synced'); }
+  #request(type, acknowledgment) {
+    if (!this.ready) return Promise.resolve(false);
+    const requestId = this.nextRequestId++;
+    const promise = new Promise((resolve, reject) => {
+      this.pendingRequests.set(requestId, { resolve, reject, acknowledgment });
+    });
+    try { this.worker.postMessage({ type, requestId }); }
+    catch (error) { this.#fail(error); }
+    return promise;
+  }
   terminate() {
     this.#fail(new Error('Dolphin worker was terminated.'));
     this.worker.terminate?.();

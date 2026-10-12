@@ -67,6 +67,17 @@ test('unchanged input avoids native calls while button and axis releases are sen
   assert.deepEqual(mod.calls.slice(count), [['button', GAMECUBE_BUTTON_IDS.A, 0], ['axis', GAMECUBE_AXIS_IDS.lx, 0]]);
 });
 
+test('GameCube shoulder and Z buttons reach the pinned Dolphin libretro controls', async () => {
+  // DolphinLibretro/Input.cpp binds GC L/R full press to L2/R2 and Z to R.
+  // These numeric ABI assertions deliberately do not reuse the adapter's map.
+  const mod = fakeModule();
+  const adapter = new DolphinWasmAdapter(mod);
+  await adapter.init();
+  adapter.setInput({ buttons: { L: true, R: true, Z: true } });
+  for (const id of [12, 13, 11]) assert.ok(mod.calls.some(c => c[0] === 'button' && c[1] === id && c[2] === 1));
+  assert.ok(!mod.calls.some(c => c[0] === 'button' && c[1] === 10 && c[2] === 1), 'GC shoulders must not activate Triforce Test');
+});
+
 test('refresh rate uses the optional native export and falls back for older cores', () => {
   const mod = fakeModule();
   assert.equal(new DolphinWasmAdapter(mod).getFrameRate(), 60);

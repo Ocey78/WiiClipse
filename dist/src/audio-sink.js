@@ -11,6 +11,24 @@ export class AudioSink {
     this.sources = new Set();
     this.nextTime = 0;
     this.fallbackDroppedFrames = 0;
+    this.volume = 1;
+    this.muted = false;
+    this.gain = null;
+  }
+
+  setVolume(value) {
+    if (!Number.isFinite(value)) return;
+    this.volume = Math.max(0, Math.min(1, value));
+    this.updateGain();
+  }
+
+  setMuted(muted) {
+    this.muted = !!muted;
+    this.updateGain();
+  }
+
+  updateGain() {
+    if (this.gain) this.gain.gain.value = this.muted ? 0 : this.volume;
   }
 
   async resume() {
@@ -20,6 +38,10 @@ export class AudioSink {
       const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
       if (!AudioContextClass) return false;
       this.context = new AudioContextClass({ latencyHint: 'interactive' });
+      this.gain?.disconnect();
+      this.gain = this.context.createGain();
+      this.gain.connect(this.context.destination);
+      this.updateGain();
       this.nextTime = this.context.currentTime;
       this.initializing = null;
     }
@@ -52,7 +74,7 @@ export class AudioSink {
           this.disposeNode();
           this.initializeFallback(context);
         };
-        node.connect(context.destination);
+        node.connect(this.gain);
         return;
       } catch {
         if (this.context !== context) return;
@@ -69,7 +91,7 @@ export class AudioSink {
       this.node = context.createScriptProcessor(1024, 0, 2);
       this.node.onaudioprocess = ({ outputBuffer }) => this.ring?.render(
         outputBuffer.getChannelData(0), outputBuffer.getChannelData(1), context.sampleRate);
-      this.node.connect(context.destination);
+      this.node.connect(this.gain);
       this.mode = 'script';
     } else {
       this.mode = 'scheduled';
@@ -106,7 +128,7 @@ export class AudioSink {
     }
     const source = context.createBufferSource();
     source.buffer = audio;
-    source.connect(context.destination);
+    source.connect(this.gain);
     this.sources.add(source);
     source.onended = () => { source.disconnect(); this.sources.delete(source); };
     source.start(start);
@@ -164,6 +186,8 @@ export class AudioSink {
     this.disposeNode();
     const context = this.context;
     this.context = null;
+    this.gain?.disconnect();
+    this.gain = null;
     this.initializing = null;
     this.mode = 'uninitialized';
     if (context && context.state !== 'closed') await context.close();

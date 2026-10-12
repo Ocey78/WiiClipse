@@ -1,4 +1,4 @@
-# Dolphin Web — iOS 18+
+# WiiClipse — GameCube and Wii in your browser
 
 **WiiClipse site:** https://ocey78.github.io/WiiClipse/
 
@@ -7,6 +7,25 @@ The experimental Dolphin WebAssembly core has compiled and booted original GameC
 Dolphin Web is a **client-side** GameCube/Wii browser port project targeting Safari on iOS/iPadOS 18+. It uses a PWA frontend, a dedicated Web Worker, Emscripten/WebAssembly, WebGL2 for presentation, WebAudio, browser-local saves, touch controls, and the Gamepad API. There is no remote Dolphin server and no game streaming.
 
 The file picker accepts GameCube ISO/GCM images, DOL/ELF homebrew, and bootable **Wii WAD channel packages** (not Doom WAD files). Dolphin's WAD boot path installs into the emulated NAND under browser-local save storage before launching the title. File selection does not guarantee title compatibility; actual boot requires the native core.
+
+## Player controls
+
+- Choose or drop a local game file, then press **Play**. Empty files and unsupported formats are rejected before reaching the core. Selecting another file lets you replace the running title.
+- **Pause / Resume** keeps the current session in memory. A manually paused session stays paused when you return to the tab. **Stop** unloads the game and waits for save synchronization; Play then starts it again.
+- **Save progress** flushes the game's normal saves to browser storage; it is not an emulator save state. The save indicator confirms completion or reports an error. Browser storage can be cleared or evicted, and private browsing may prevent persistence.
+- Volume, mute, touch visibility, and the 4:3/16:9 display choice are remembered locally. Fullscreen includes the controller; browsers without it can use the expanded player.
+- FPS and speed show measured emulated-frame completion, updated once a second. They do not imply commercial-game compatibility or guaranteed full speed.
+
+| Input | Mapping |
+| --- | --- |
+| Main stick | W A S D |
+| D-pad | Arrow keys |
+| A / B / X / Y | J / K / U / I |
+| L / R / Z | Q / E / Space |
+| C-stick up / left / down / right | T / F / G / H |
+| Start | Enter |
+
+Touch controls include both sticks, shoulders, Z, D-pad, face buttons and Start. Standard browser-mapped gamepads work from any connected slot: triggers are L/R and the right bumper is Z. Keyboard, touch, and gamepad input combine without cancelling each other. Focus loss, pause, stop, and disconnect release held controls. Gamepad dead zones and quantization suppress drift; polling stops while the session is inactive.
 
 ## What is implemented
 
@@ -25,9 +44,13 @@ npm run build
 npm start
 ```
 
+The local server serves `dist/`, the same artifact published to Pages. Rebuild after changing files in `src/` or `public/`, then reload the preview.
+
 On Windows you can run `build-ios-web.bat` and `run-local.bat`. For the native core, `build-core-wsl.bat` bootstraps Emscripten in WSL and runs the pinned Dolphin build automatically.
 
 For the browser smoke check, run `npm ci`, `npx playwright install chromium`, then `npm run verify && npm run test:browser`. It serves the built app below `/WiiClipse/` without server isolation headers and checks startup, shared-memory availability, file selection, reload, and the offline app shell. With a compiled core installed, `EXPECT_CORE_READY=1 npm run test:browser` also boots the original DOL and WAD probes and checks their actual video output.
+
+The player interaction check runs with `node tests/player-browser.mjs` after fetching the core and building. It boots original homebrew and verifies keyboard input, pause/resume, acknowledged saves, volume/mute, stop, remembered preferences, and desktop/phone layout. Set `SMOKE_BROWSER=webkit` for WebKit. The Pages workflow runs both browsers.
 
 ## GitHub Pages
 

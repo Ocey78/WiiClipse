@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:browser": "node tests/browser-smoke.mjs",
+    "test:player": "node tests/player-browser.mjs",
     "start": "node server.mjs",
     "build": "node scripts/build.mjs",
     "build:core": "bash native/build-dolphin-wasm.sh",

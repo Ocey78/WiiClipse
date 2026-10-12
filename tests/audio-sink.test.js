@@ -4,7 +4,7 @@ import { AudioSink } from '../src/audio-sink.js';
 import { PcmRing } from '../src/audio-ring.js';
 
 function environment(t, { worklet = true, script = true, moduleFailure = false, resumeFailure = false, addModule } = {}) {
-  const calls = { buffers: 0, sources: 0, worklets: [], scripts: [], events: [] };
+  const calls = { buffers: 0, sources: 0, worklets: [], scripts: [], events: [], gains: [], outputs: [] };
   class Context {
     constructor() {
       this.state = 'suspended'; this.sampleRate = 44100; this.currentTime = 0; this.destination = {};
@@ -22,6 +22,11 @@ function environment(t, { worklet = true, script = true, moduleFailure = false, 
     async resume() { calls.events.push('resume'); if (resumeFailure) throw new Error('gesture required'); this.state = 'running'; }
     async suspend() { this.state = 'suspended'; }
     async close() { this.state = 'closed'; }
+    createGain() {
+      const node = { gain: { value: 1 }, connect() {}, disconnect() {} };
+      calls.gains.push(node);
+      return node;
+    }
     createBuffer(channels, frames, rate) {
       calls.buffers++;
       const data = Array.from({ length: channels }, () => new Float32Array(frames));
@@ -37,7 +42,7 @@ function environment(t, { worklet = true, script = true, moduleFailure = false, 
       this.options = options; this.port = { close() {} };
       assert.equal(name, 'wiiclipse-audio'); calls.worklets.push(this);
     }
-    connect() {}
+    connect(destination) { calls.outputs.push(destination); }
     disconnect() { this.disconnected = true; }
   }
   for (const [key, value] of Object.entries({ AudioContext: Context, AudioWorkletNode: WorkletNode, crossOriginIsolated: true })) {
@@ -47,6 +52,28 @@ function environment(t, { worklet = true, script = true, moduleFailure = false, 
   }
   return calls;
 }
+
+test('volume and mute use a shared gain stage and preserve the chosen level', async t => {
+  const calls = environment(t);
+  const sink = new AudioSink();
+  assert.equal(typeof sink.setVolume, 'function');
+  sink.setVolume(0.35);
+  await sink.resume();
+  assert.equal(calls.gains.length, 1);
+  assert.equal(calls.outputs[0], calls.gains[0]);
+  assert.equal(calls.gains[0].gain.value, 0.35);
+  sink.setMuted(true);
+  assert.equal(calls.gains[0].gain.value, 0);
+  sink.setMuted(false);
+  assert.equal(calls.gains[0].gain.value, 0.35);
+  sink.setVolume(9);
+  assert.equal(calls.gains[0].gain.value, 1);
+  sink.setVolume(-2);
+  assert.equal(calls.gains[0].gain.value, 0);
+  sink.setVolume(NaN);
+  assert.equal(calls.gains[0].gain.value, 0);
+  await sink.close();
+});
 
 test('worklet path resumes within the gesture and streams 5000 chunks using one node and fixed PCM storage', async t => {
   const calls = environment(t);

@@ -148,3 +148,76 @@ test('frame completion can dispatch the next frame immediately and preserves con
   ready.worker.emit({ type: 'frame-done', frameRate: 50 });
   assert.equal(nextDispatched, true);
 });
+
+test('save requests await matching acknowledgments and persistence errors leave the core usable', async () => {
+  const states = [];
+  const { worker, client } = await readyClient({ onSaveStatus: status => states.push(status.state) });
+  const first = client.syncSaves();
+  const second = client.syncSaves();
+  assert.ok(first instanceof Promise);
+  const [one, two] = worker.sent.filter(m => m.type === 'sync-saves');
+  assert.notEqual(one.requestId, two.requestId);
+  let done = false;
+  first.then(() => { done = true; });
+  worker.emit({ type: 'saves-synced', requestId: 999, ok: true });
+  await Promise.resolve();
+  assert.equal(done, false);
+  worker.emit({ type: 'save-status', state: 'saving', message: 'Saving' });
+  worker.emit({ type: 'save-status', state: 'error', message: 'Storage full' });
+  const rejected = assert.rejects(second, /Storage full/);
+  worker.emit({ type: 'saves-synced', requestId: two.requestId, ok: false, message: 'Storage full' });
+  await rejected;
+  worker.emit({ type: 'saves-synced', requestId: one.requestId, ok: true });
+  await first;
+  assert.equal(client.isReady(), true);
+  assert.deepEqual(states, ['saving', 'error']);
+});
+
+test('unload waits for native cleanup before a requested replacement starts', async () => {
+  const { worker, client } = await readyClient();
+  const unloading = client.unloadGame();
+  assert.ok(unloading instanceof Promise);
+  const unload = worker.sent.at(-1);
+  const replacing = client.bootGame({ name: 'next.dol' });
+  assert.equal(worker.sent.at(-1).type, 'unload');
+  worker.emit({ type: 'unloaded', requestId: unload.requestId, ok: true });
+  await unloading;
+  await Promise.resolve();
+  assert.equal(worker.sent.at(-1).type, 'boot');
+  worker.emit({ type: 'booted' });
+  await replacing;
+});
+
+test('worker crash settles pending persistence and unload promises', async () => {
+  const { worker, client } = await readyClient();
+  const save = client.syncSaves();
+  const unload = client.unloadGame();
+  assert.ok(save instanceof Promise && unload instanceof Promise);
+  const rejected = Promise.all([assert.rejects(save, /crashed/), assert.rejects(unload, /crashed/)]);
+  worker.fail('Worker crashed');
+  await rejected;
+});
+
+test('unload requested during boot cannot leave the client running after cleanup', async () => {
+  const { worker, client } = await readyClient();
+  const boot = client.bootGame({ name: 'loading.dol' });
+  const unload = client.unloadGame();
+  const requestId = worker.sent.at(-1).requestId;
+  worker.emit({ type: 'booted' });
+  await boot;
+  worker.emit({ type: 'unloaded', requestId, ok: true });
+  await unload;
+  assert.equal(client.runFrame(), false, 'unloaded titles cannot submit another frame');
+});
+
+test('recoverable boot rejection does not reject an unrelated queued save', async () => {
+  const { worker, client } = await readyClient();
+  const boot = client.bootGame({ name: 'bad.dol' });
+  const saving = client.syncSaves();
+  const requestId = worker.sent.at(-1).requestId;
+  const rejected = assert.rejects(boot, /Rejected/);
+  worker.emit({ type: 'error', operation: 'boot', recoverable: true, message: 'Rejected title' });
+  await rejected;
+  worker.emit({ type: 'saves-synced', requestId, ok: true });
+  assert.equal((await saving).ok, true);
+});

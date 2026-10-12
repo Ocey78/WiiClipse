@@ -11,10 +11,11 @@ async function loadApp(t, { workerFailure, audioFailure, noWebGL = false } = {})
       const classes = new Set();
       const listeners = new Map();
       elements.set(selector, {
-        disabled: selector === '#play', textContent: '', files: [],
-        classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
+        disabled: selector === '#play', textContent: '', files: [], dataset: {}, style: {},
+        setAttribute() {}, removeAttribute() {}, blur() {},
+        classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name), toggle(name, on) { if (on ?? !classes.has(name)) classes.add(name); else classes.delete(name); } },
         addEventListener: (type, listener) => listeners.set(type, listener),
-        trigger: (type) => listeners.get(type)?.({ preventDefault() {} }),
+        trigger: (type, detail = {}) => listeners.get(type)?.({ preventDefault() {}, ...detail }),
         click() { this.clicked = true; return this.trigger('click'); },
       });
     }
@@ -39,15 +40,22 @@ async function loadApp(t, { workerFailure, audioFailure, noWebGL = false } = {})
     fail(message) { this.listeners.get('error')?.({ message }); }
   }
   let nextFrame;
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const fakeDocument = { querySelector: element, querySelectorAll: () => [], createElement: () => element('#screen'), visibilityState: 'visible',
+    addEventListener: (type, cb) => documentListeners.set(type, cb), removeEventListener() {},
+    documentElement: element('html'), body: element('body') };
   const globals = {
-    document: { querySelector: element, querySelectorAll: () => [], createElement: () => element('#screen'), addEventListener() {} },
+    document: fakeDocument,
     navigator: {},
-    window: { addEventListener() {} },
+    window: { addEventListener: (type, cb) => windowListeners.set(type, cb), removeEventListener() {}, requestAnimationFrame: cb => { nextFrame = cb; return 1; }, cancelAnimationFrame() {} },
     Worker: BrowserWorker,
     requestAnimationFrame: (callback) => { nextFrame = callback; },
     AudioContext: class {
       constructor() { this.state = 'suspended'; this.currentTime = 0; }
-      async resume() { if (audioFailure) throw new Error(audioFailure); }
+      createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+      async resume() { if (audioFailure) throw new Error(audioFailure); this.state = 'running'; }
+      async suspend() { this.state = 'suspended'; }
     },
   };
   for (const [key, value] of Object.entries(globals)) {
@@ -60,7 +68,9 @@ async function loadApp(t, { workerFailure, audioFailure, noWebGL = false } = {})
     element('#gameFile').files = [{ name: 'game.dol', size: 1024 }];
     element('#gameFile').trigger('change');
   };
-  return { element, worker, choose, frame: () => nextFrame() };
+  return { element, worker, choose, frame: () => nextFrame?.(),
+    visibility(hidden) { fakeDocument.visibilityState = hidden ? 'hidden' : 'visible'; documentListeners.get('visibilitychange')?.(); },
+  };
 }
 
 async function readyApp(t, options) {
@@ -133,4 +143,49 @@ test('worker crash revokes Play and the ready indicator', async (t) => {
   assert.equal(app.element('#play').disabled, true);
   assert.equal(app.element('#coreState').classList.contains('ready'), false);
   assert.match(app.element('#status').textContent, /crashed/);
+});
+
+test('manual pause stops frames and remains paused after backgrounding', async t => {
+  const app = await readyApp(t);
+  const boot = app.element('#play').click();
+  await flush();
+  app.worker.emit({ type: 'booted' });
+  await boot;
+  const pausing = app.element('#pause').click();
+  const saveRequest = app.worker.messages.findLast(m => m.type === 'sync-saves');
+  if (saveRequest) app.worker.emit({ type: 'saves-synced', requestId: saveRequest.requestId, ok: true });
+  await pausing;
+  app.worker.emit({ type: 'frame-done', frameRate: 60 });
+  const before = app.worker.messages.filter(m => m.type === 'frame').length;
+  app.visibility(true);
+  app.visibility(false);
+  await flush();
+  assert.match(app.element('#sessionState').textContent, /Paused/);
+  assert.equal(app.worker.messages.filter(m => m.type === 'frame').length, before);
+  assert.match(app.element('#pause').textContent, /Resume/);
+});
+
+test('Stop disables session controls and waits for unload acknowledgment before Play', async t => {
+  const app = await readyApp(t);
+  const boot = app.element('#play').click();
+  await flush();
+  app.worker.emit({ type: 'booted' });
+  await boot;
+  const stopping = app.element('#stop').click();
+  await flush();
+  const request = app.worker.messages.findLast(m => m.type === 'unload');
+  assert.ok(request, 'Stop unloads the native title');
+  assert.equal(app.element('#play').disabled, true);
+  app.worker.emit({ type: 'unloaded', requestId: request.requestId });
+  await stopping;
+  assert.equal(app.element('#play').disabled, false);
+  assert.equal(app.element('#pause').disabled, true);
+  assert.match(app.element('#sessionState').textContent, /Ready|Stopped/);
+});
+
+test('dropped unsupported file leaves the native core ready but Play disabled', async t => {
+  const app = await readyApp(t);
+  app.element('#dropZone').trigger('drop', { dataTransfer: { files: [{ name: 'archive.zip', size: 400 }] } });
+  assert.equal(app.element('#play').disabled, true);
+  assert.match(app.element('#gameMeta').textContent, /accepts/);
 });

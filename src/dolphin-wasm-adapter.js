@@ -9,9 +9,10 @@ export const GAMECUBE_BUTTON_IDS = Object.freeze({
   RIGHT: 7,
   A: 8,
   X: 9,
-  L: 10,
-  R: 11,
-  Z: 12,
+  // Dolphin's GC full triggers use libretro L2/R2; GC Z uses libretro R.
+  L: 12,
+  R: 13,
+  Z: 11,
 });
 
 export const GAMECUBE_AXIS_IDS = Object.freeze({

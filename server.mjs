@@ -3,13 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = path.dirname(fileURLToPath(import.meta.url));
+// Serve the same artifact that GitHub Pages publishes, including its root URLs.
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
 const port = Number(process.env.PORT || 8080);
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.wasm': 'application/wasm',
   '.data': 'application/octet-stream',
@@ -17,8 +19,10 @@ const types = {
 };
 
 const server = http.createServer((req, res) => {
-  let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
-  if (urlPath === '/') urlPath = '/public/index.html';
+  let urlPath;
+  try { urlPath = decodeURIComponent((req.url || '/').split('?')[0]); }
+  catch { res.writeHead(400).end('Invalid URL'); return; }
+  if (urlPath === '/') urlPath = '/index.html';
   const requested = path.resolve(root, `.${urlPath}`);
   if (requested !== root && !requested.startsWith(`${root}${path.sep}`)) {
     res.writeHead(403);
@@ -47,4 +51,4 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(port, () => console.log(`Dolphin Web: http://localhost:${port}`));
+server.listen(port, () => console.log(`WiiClipse: http://localhost:${server.address().port}`));
