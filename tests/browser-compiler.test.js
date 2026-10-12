@@ -134,6 +134,43 @@ test('generated modules expose stable profiler names without guest identifiers',
   assert.doesNotMatch(text, /gate|blockID|epoch|entry|payload/);
 });
 
+test('optional EndBlock fast path observes live MMCR state and preserves legacy fallback', async () => {
+  const env = environment();
+  const u = n => { const bytes = []; do { const b = n & 127; n >>>= 7; bytes.push(b | (n ? 128 : 0)); } while (n); return bytes; };
+  const sec = (id, bytes) => [id, ...u(bytes.length), ...bytes];
+  // Native observer models EndBlock state writes and marks original helper use.
+  const code = [32,0,32,0,40,2,...u(132),54,2,...u(128),
+    32,0,32,0,40,2,...u(136),65,16,107,54,2,...u(136),
+    32,0,32,0,40,2,...u(148),65,1,106,54,2,...u(148),65,0,11];
+  const bytes = Uint8Array.from([0,97,115,109,1,0,0,0,
+    ...sec(1,[1,96,2,127,127,1,127]),
+    ...sec(2,[1,3,101,110,118,6,109,101,109,111,114,121,2,3,2,8]),
+    ...sec(3,[1,0]), ...sec(7,[1,3,114,117,110,0,0]),
+    ...sec(10,[1,...u(code.length+1),0,...code])]);
+  env.table.set(1, (await WebAssembly.instantiate(bytes,{env:{memory:env.memory}})).instance.exports.run);
+  const end = {kind:'callback',role:'end',handler:1,payload:0,distance:16,terminal:true,cycles:16};
+  const state = {gpr:0,pc:128,npc:132,downcount:136,mmcr0:140,mmcr1:144};
+  const fast = await env.compiler.compile(descriptor([end],{state}));
+  const legacy = await env.compiler.compile(descriptor([end]));
+  const missingCycles = await env.compiler.compile(descriptor([{...end,cycles:undefined}],{state}));
+  env.memory.grow(1);
+  const words = new Uint32Array(env.memory.buffer);
+  for (const pointer of [0,2*65536]) for (const [mmcr0,mmcr1] of [[0,0],[1,0],[0,1],[0x80000000,0],[0,0xffffffff]]) {
+    for (const downcount of [0,15,16,0x80000000,0xffffffff]) {
+      const base=pointer/4; words[base+32]=7; words[base+33]=0xffffffff; words[base+34]=downcount;
+      words[base+35]=mmcr0; words[base+36]=mmcr1; words[base+37]=0;
+      assert.equal(fast(pointer,0),0);
+      assert.equal(words[base+32],0xffffffff); assert.equal(words[base+34],(downcount-16)>>>0);
+      assert.equal(words[base+37],(mmcr0|mmcr1)===0?0:1);
+      assert.equal(words[base+35],mmcr0); assert.equal(words[base+36],mmcr1);
+    }
+  }
+  for (const run of [legacy,missingCycles]) {
+    words[33]=123; words[34]=3; words[35]=words[36]=words[37]=0;
+    assert.equal(run(0,0),0); assert.equal(words[32],123); assert.equal(words[34],0xfffffff3); assert.equal(words[37],1);
+  }
+});
+
 test('instruction helpers are imported native Wasm functions with exact PC/NPC writes', async () => {
   const env = environment();
   // Actual Emscripten aggregate ABI: raw vii handlers receive an instruction

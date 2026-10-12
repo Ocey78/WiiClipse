@@ -72,6 +72,7 @@ addToLibrary({
       function emit() { for (var i = 0; i < arguments.length; ++i) code.push.apply(code, arguments[i]); }
       function constant(value) { return [0x41].concat(s(value)); }
       function load(register) { return [0x20, 0, 0x28, 2].concat(u(state.gpr + register * 4)); }
+      function stateLoad(offset) { return [0x20, 0, 0x28, 2].concat(u(offset)); }
       function inverse(bytes) { return bytes.concat(constant(-1), [0x73]); }
       function binary(a, b, opcode) { return a.concat(b, [opcode]); }
       function helper(index, type) {
@@ -146,6 +147,19 @@ addToLibrary({
           require(uint(op.payload) && uint(op.distance) && op.distance > 0 && (op.distance & 3) === 0 &&
             (op.role === 'checked' || op.role === 'fpu' || op.role === 'end') && op.terminal === (op.role === 'end'));
           require(!op.terminal || record === descriptor.ops.length - 1);
+          var inlineEnd = op.role === 'end' && uint(op.cycles) &&
+            ['downcount', 'mmcr0', 'mmcr1'].every(function(field) { return state[field] !== undefined; });
+          if (inlineEnd) {
+            require(['downcount', 'mmcr0', 'mmcr1'].every(function(field) {
+              return uint(state[field]) && (state[field] & 3) === 0 && state[field] < env.memory.buffer.byteLength - 4;
+            }));
+            // Zero MMCR selectors and interrupt controls make the original
+            // performance monitor a no-op. Inspect live state after helpers.
+            emit(stateLoad(state.mmcr0), stateLoad(state.mmcr1), [0x72, 0x45, 0x04, 0x40],
+              [0x20, 0], stateLoad(state.npc), [0x36, 2], u(state.pc),
+              [0x20, 0], stateLoad(state.downcount), constant(op.cycles), [0x6b, 0x36, 2], u(state.downcount),
+              constant(0), [0x0f, 0x0b]);
+          }
           emit([0x20, 0], constant(op.payload), [0x10], u(helper(op.handler, 1)),
             [0x45, 0x04, 0x40], constant(0), [0x0f, 0x0b]);
           ++opCount;

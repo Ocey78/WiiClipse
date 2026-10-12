@@ -1,0 +1,136 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 527cd81..feebe71 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -226,62 +226,71 @@ s32 CachedInterpreter::RunBrowserCompilerGate(PowerPC::PowerPCState& ppc_state,
+   auto& gate = const_cast<BrowserCompilerGate&>(operands);
+   auto& cached = *static_cast<CachedInterpreter*>(gate.owner);
+   auto& registry = cached.m_browser_compiler;
+-  ++registry.active;
+-  const bool allowed = registry.enabled && cached.BrowserCompilerOnOwnerThread() &&
+-                       !cached.IsDebuggingEnabled() && !cached.IsProfilingEnabled() &&
+-                       !cached.m_system.GetCPU().IsStepping();
+-  if (allowed && gate.compiled)
++  const auto allowed = [&] {
++    return cached.BrowserCompilerOnOwnerThread() && !cached.IsDebuggingEnabled() &&
++           !cached.IsProfilingEnabled() && !cached.m_system.GetCPU().IsStepping();
++  };
++  if (registry.enabled && gate.compiled && allowed())
+   {
++    // Only generated code uses retained payloads. Keep them and its table slot
++    // alive across native callbacks that invalidate this block or reset the core.
++    ++registry.active;
+     ++registry.compiled_calls;
+     gate.compiled(ppc_state, gate.retained);
++    --registry.active;
++    cached.DrainBrowserCompiler();
++    return 0;
++  }
++
++  ++registry.fallback_calls;
++  if (gate.job == BrowserCompiler::Job::Rejected)
++    ++registry.rejected_calls;
++  // Continue the same callback loop after this record. No recursive stream,
++  // thread/config checks, or cleanup is needed for an ordinary native fallback.
++  const s32 distance = sizeof(AnyCallback) + sizeof(BrowserCompilerGate);
++  if (!registry.enabled || gate.job != BrowserCompiler::Job::Idle || registry.queued >= 16)
++    return distance;
++  if (++gate.hits < (registry.compiled >= 512 && gate.retry_threshold < 2048 ?
++                        2048u : gate.retry_threshold))
++    return distance;
++  gate.hits = 0;
++  // Eligibility is still checked immediately before every request and every
++  // compiled entry; counting potential hits cannot change guest execution.
++  if (!allowed())
++    return distance;
++  const auto descriptor = registry.Retain(gate) ? cached.DescribeBrowserCompilerBlock(gate) :
++                                                std::string{};
++  if (descriptor.empty())
++  {
++    gate.job = BrowserCompiler::Job::Rejected;
++    ++registry.rejections;
++    registry.DropCopy(gate);
+   }
+   else
+   {
+-    ++registry.fallback_calls;
+-    if (gate.job == BrowserCompiler::Job::Rejected)
+-      ++registry.rejected_calls;
+-    if (allowed && registry.queued < 16 && gate.job == BrowserCompiler::Job::Idle &&
+-        ++gate.hits >= (registry.compiled >= 512 && gate.retry_threshold < 2048 ?
+-                           2048u : gate.retry_threshold))
++    ++registry.requests;
++    const int result = dweb_browser_compile_request(
++        descriptor.c_str(), static_cast<u32>(reinterpret_cast<uintptr_t>(&gate)), gate.id,
++        gate.epoch);
++    if (result > 0)
+     {
+-      gate.hits = 0;
+-      const auto descriptor = registry.Retain(gate) ? cached.DescribeBrowserCompilerBlock(gate) :
+-                                                    std::string{};
+-      if (descriptor.empty())
+-      {
+-        gate.job = BrowserCompiler::Job::Rejected;
+-        ++registry.rejections;
+-        registry.DropCopy(gate);
+-      }
+-      else
+-      {
+-        ++registry.requests;
+-        const int result = dweb_browser_compile_request(
+-            descriptor.c_str(), static_cast<u32>(reinterpret_cast<uintptr_t>(&gate)), gate.id,
+-            gate.epoch);
+-        if (result > 0)
+-        {
+-          gate.job = BrowserCompiler::Job::Queued;
+-          ++registry.queued;
+-        }
+-        else if (result < 0)
+-        {
+-          gate.job = BrowserCompiler::Job::Rejected;
+-          ++registry.rejections;
+-          registry.DropCopy(gate);
+-        }
+-        else
+-        {
+-          gate.retry_threshold = 4096;
+-          registry.DropCopy(gate);
+-        }
+-      }
++      gate.job = BrowserCompiler::Job::Queued;
++      ++registry.queued;
++    }
++    else if (result < 0)
++    {
++      gate.job = BrowserCompiler::Job::Rejected;
++      ++registry.rejections;
++      registry.DropCopy(gate);
++    }
++    else
++    {
++      gate.retry_threshold = 4096;
++      registry.DropCopy(gate);
+     }
+-    cached.ExecuteCallbackStream(gate.entry);
+   }
+-  --registry.active;
+   cached.DrainBrowserCompiler();
+-  return 0;
++  return distance;
+ }
+ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompilerGate& gate) const
+ {
+@@ -483,7 +492,12 @@ void CachedInterpreter::ExecuteCallbackStream(const u8* normal_entry)
+ #if defined(__EMSCRIPTEN__) && defined(DWEB_BROWSER_COMPILER)
+     if (callback == AnyCallbackCast(RunBrowserCompilerGate))
+     {
+-      RunBrowserCompilerGate(ppc_state, *reinterpret_cast<const BrowserCompilerGate*>(payload));
++      if (const auto distance = RunBrowserCompilerGate(
++              ppc_state, *reinterpret_cast<const BrowserCompilerGate*>(payload)))
++      {
++        normal_entry += distance;
++        continue;
++      }
+       break;
+     }
+ #endif

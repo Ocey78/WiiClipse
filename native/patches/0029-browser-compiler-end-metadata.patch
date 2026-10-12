@@ -1,0 +1,29 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index feebe71..14d8668 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -307,7 +307,11 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+       << ",\"instructionBridge\":" << number(dweb_browser_compiler_instruction)
+       << ",\"end\":" << number(end) << ",\"state\":{\"gpr\":"
+       << offsetof(PowerPC::PowerPCState, gpr) << ",\"pc\":" << offsetof(PowerPC::PowerPCState, pc)
+-      << ",\"npc\":" << offsetof(PowerPC::PowerPCState, npc) << "},\"ops\":[";
++      << ",\"npc\":" << offsetof(PowerPC::PowerPCState, npc)
++      << ",\"downcount\":" << offsetof(PowerPC::PowerPCState, downcount)
++      << ",\"mmcr0\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_MMCR0
++      << ",\"mmcr1\":" << offsetof(PowerPC::PowerPCState, spr) + sizeof(u32) * SPR_MMCR1
++      << "},\"ops\":[";
+   unsigned records = 0;
+   bool terminal = false;
+   const auto comma = [&] { if (records++) out << ','; };
+@@ -403,7 +407,10 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+       out << "{\"kind\":\"callback\",\"role\":\"" << (terminal ? "end" : fpu ? "fpu" : "checked")
+           << "\",\"handler\":" << number(callback) << ",\"payload\":" << number(payload)
+           << ",\"distance\":" << sizeof(callback) + size << ",\"terminal\":"
+-          << (terminal ? "true" : "false") << '}';
++          << (terminal ? "true" : "false");
++      if (terminal)
++        out << ",\"cycles\":" << reinterpret_cast<const EndBlockOperands<false>*>(payload)->downcount;
++      out << '}';
+     }
+     else
+     {
