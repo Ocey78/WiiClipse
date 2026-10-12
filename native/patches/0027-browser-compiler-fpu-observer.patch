@@ -1,0 +1,36 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 439aea7..527cd81 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -377,25 +377,28 @@ std::string CachedInterpreter::DescribeBrowserCompilerBlock(const BrowserCompile
+     }
+     else if (callback == AnyCallbackCast(InterpretAndCheckExceptions<false>) ||
+              callback == AnyCallbackCast(InterpretAndCheckExceptions<true>) ||
++             callback == AnyCallbackCast(CheckFPU) ||
+              callback == AnyCallbackCast(EndBlock<false>))
+     {
+       terminal = callback == AnyCallbackCast(EndBlock<false>);
++      const bool fpu = callback == AnyCallbackCast(CheckFPU);
+       size = terminal ? sizeof(EndBlockOperands<false>) :
++             fpu ? sizeof(CheckHaltOperands) :
+                         sizeof(InterpretAndCheckExceptionsOperands);
+       if (end - payload < static_cast<ptrdiff_t>(size))
+         return {};
+-      if (!terminal && !allowed_instruction(
++      if (!terminal && !fpu && !allowed_instruction(
+                            reinterpret_cast<const InterpretAndCheckExceptionsOperands*>(payload)->inst.hex))
+         return {};
+       comma();
+-      out << "{\"kind\":\"callback\",\"role\":\"" << (terminal ? "end" : "checked")
++      out << "{\"kind\":\"callback\",\"role\":\"" << (terminal ? "end" : fpu ? "fpu" : "checked")
+           << "\",\"handler\":" << number(callback) << ",\"payload\":" << number(payload)
+           << ",\"distance\":" << sizeof(callback) + size << ",\"terminal\":"
+           << (terminal ? "true" : "false") << '}';
+     }
+     else
+     {
+-      // HLE, debugger, FPU checks, broken/idle/cache loops and unknown callbacks
++      // HLE, debugger, broken/idle/cache loops and unknown callbacks
+       // remain on the exact original stream, including all state observers.
+       return {};
+     }

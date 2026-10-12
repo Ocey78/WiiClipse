@@ -25,12 +25,15 @@ const settings = {
   samplingIntervalUs: Number(process.env.PERF_SAMPLE_US || 1000),
   guestProfile: process.env.PERF_GUEST_PROFILE === '1',
   capture: process.env.PERF_CAPTURE === '1',
+  compiler: process.env.PERF_COMPILER || null,
 };
 if (!Number.isInteger(settings.warmup) || settings.warmup < 120 || settings.warmup > 12000 ||
     !Number.isInteger(settings.frames) || settings.frames < 10 || settings.frames > 2000 ||
     !['hardware', 'software'].includes(settings.renderer) || !['bitmap', 'pixels'].includes(settings.video) ||
     !Number.isInteger(settings.samplingIntervalUs) || settings.samplingIntervalUs < 100)
   throw new Error('Invalid profile settings: warmup 120–12000, frames 10–2000, hardware/software renderer, sample interval >=100us.');
+if (settings.compiler !== null && !['on', 'off'].includes(settings.compiler))
+  throw new Error('PERF_COMPILER must be on or off.');
 if (!Array.isArray(settings.inputSteps) || settings.inputSteps.some(step =>
   !Number.isInteger(step.atFrame) || step.atFrame < 0 ||
   !Number.isInteger(step.holdFrames ?? 1) || (step.holdFrames ?? 1) < 1))
@@ -60,6 +63,14 @@ self.__setGuestProfile = function(enabled) {
 };
 self.__readGuestProfile = function() {
   return adapter.module.cwrap('dweb_cpu_profile', 'string', [])();
+};
+self.__compilerCommand = function(mode) {
+  const module = adapter?.module;
+  if (typeof module?._dweb_set_browser_compiler !== 'function' ||
+      typeof module?._dweb_browser_compiler_stats !== 'function')
+    throw new Error('Compiler profiling requires a compiled-profile native core.');
+  if (mode === 'on' || mode === 'off') module._dweb_set_browser_compiler(Number(mode === 'on'));
+  return module.cwrap('dweb_browser_compiler_stats', 'string', [])();
 };
 self.__profileAdd = function(name, elapsed) {
   const item = self.__profileTotals[name] ||= { calls: 0, ms: 0 };
@@ -272,6 +283,18 @@ try {
   await page.locator('#localGame').setInputFiles(wadPath);
   await page.evaluate(() => window.bootLocalGame());
   if (!workerSession) throw new Error('The Dolphin worker was not attached for CPU profiling.');
+  const guestCommand = async expression => {
+    const result = await workerCommand('Runtime.evaluate', { expression, returnByValue: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'Native profile command failed');
+    return result.result.value;
+  };
+  const compilerSnapshots = [];
+  const readCompiler = async (phase, mode = 'read') => {
+    if (!settings.compiler) return;
+    const snapshot = JSON.parse(await guestCommand(`self.__compilerCommand(${JSON.stringify(mode)})`));
+    compilerSnapshots.push({ phase, ...snapshot });
+  };
+  await readCompiler('boot', settings.compiler);
   console.log(JSON.stringify({ phase: 'attached', browser: browser.version(), wasmSha256, settings, hostBoundaryInstrumented }));
   await workerCommand('Profiler.enable');
   await workerCommand('Profiler.setSamplingInterval', { interval: settings.samplingIntervalUs });
@@ -292,15 +315,12 @@ try {
   };
   await capture('start');
   await page.evaluate(() => { window.profileState.phase = 'measurement'; });
-  const guestCommand = async expression => {
-    const result = await workerCommand('Runtime.evaluate', { expression, returnByValue: true });
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'Guest profile command failed');
-    return result.result.value;
-  };
+  await readCompiler('measurement-start');
   if (settings.guestProfile) await guestCommand('self.__setGuestProfile(true)');
   await workerCommand('Profiler.start');
   const measured = await page.evaluate(count => window.runProfileFrames(count), settings.frames);
   const { profile } = await workerCommand('Profiler.stop');
+  await readCompiler('measurement-end');
   let guestProfile = null;
   if (settings.guestProfile) {
     await guestCommand('self.__setGuestProfile(false)');
@@ -327,7 +347,7 @@ try {
   }
   const all = [...functions.values()];
   const report = { measuredAt: new Date().toISOString(), settings, core, wasmSha256, browser: browser.version(),
-    target: target.url, hostBoundaryInstrumented, measured, guestProfile, screenshots, state: await page.evaluate(() => window.profileState),
+    target: target.url, hostBoundaryInstrumented, measured, guestProfile, compilerSnapshots, screenshots, state: await page.evaluate(() => window.profileState),
     symbols: symbolsPath ? { file: symbolsPath, entries: symbols.size,
       sha256: createHash('sha256').update(symbolText).digest('hex'),
       provenance: 'Supply the symbol map from the same core build; Wasm and map hashes are recorded for verification.' } : null,

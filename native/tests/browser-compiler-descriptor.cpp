@@ -15,10 +15,13 @@ static void dweb_browser_compile_release(u32) {}
 static void dweb_browser_compile_clear(u32) { ++clear_calls; }
 template<bool> struct EndOperands;
 template<> struct EndOperands<false> { u32 downcount,num_load_stores,num_fp_inst,padding=0; };
+struct HaltOperands { PowerPC::PowerPCManager& power_pc;u32 current_pc,downcount; };
 struct CachedInterpreter : BrowserCallbacks
 {
   using BrowserCompilerGate=BrowserCompiler::Gate;
   template<bool p> using EndBlockOperands=EndOperands<p>;
+  using CheckHaltOperands=HaltOperands;
+  static s32 CheckFPU(PowerPC::PowerPCState&,const HaltOperands&) { return 3; }
   template<class T> static AnyCallback AnyCallbackCast(s32(*fn)(PowerPC::PowerPCState&,const T&)) { return std::bit_cast<AnyCallback>(fn); }
   static s32 RunBrowserIntegerOps(PowerPC::PowerPCState&,const BrowserInteger::Header&) { return 1; }
   static s32 RunBrowserInterpretOps(PowerPC::PowerPCState&,const BrowserInterpret::Header&) { return 2; }
@@ -93,6 +96,16 @@ int main()
   assert(json.find("\"payload\":"+std::to_string(Address(gate.entry+checked_offset)))==std::string::npos);
   program.bytes.fill(0);assert(cached.DescribeBrowserCompilerBlock(gate)==json);
   registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+#ifdef TEST_BROWSER_COMPILER_FPU
+  Program fpu_program;
+  const HaltOperands halt{fixture.manager,0x80002200,7};
+  fpu_program.Add(CachedInterpreter::CheckFPU,halt);
+  fpu_program.Add(CachedInterpreter::Interpret<false>,load);fpu_program.End();
+  const auto fpu_json=Describe(cached,fpu_program,registry,gate);
+  assert(!fpu_json.empty() && fpu_json.find("\"role\":\"fpu\"")!=std::string::npos);
+  assert(fpu_json.find("\"distance\":"+std::to_string(sizeof(CachedInterpreter::AnyCallback)+sizeof(halt)))!=std::string::npos);
+  registry.Retire(gate);registry.Drain([](u32){},[](u32){});
+#endif
   for(unsigned reject=0;reject<5;++reject) {
     Program bad;
     if(reject==0)bad.Add(Unknown,42u);

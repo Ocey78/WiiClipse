@@ -140,11 +140,11 @@ addToLibrary({
             [0x10], u(helper(descriptor.instructionBridge, 2)));
           ++opCount;
         } else if (op.kind === 'callback') {
-          // Native descriptors contain only the fixed-stride checked handlers
+          // Native descriptors contain only the fixed-stride checked/FPU guards
           // and EndBlock. Arbitrary AnyCallback return distances cannot be
           // linearized; unknown roles and unterminated blocks are rejected.
           require(uint(op.payload) && uint(op.distance) && op.distance > 0 && (op.distance & 3) === 0 &&
-            (op.role === 'checked' || op.role === 'end') && op.terminal === (op.role === 'end'));
+            (op.role === 'checked' || op.role === 'fpu' || op.role === 'end') && op.terminal === (op.role === 'end'));
           require(!op.terminal || record === descriptor.ops.length - 1);
           emit([0x20, 0], constant(op.payload), [0x10], u(helper(op.handler, 1)),
             [0x45, 0x04, 0x40], constant(0), [0x0f, 0x0b]);

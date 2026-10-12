@@ -185,6 +185,24 @@ test('checked callback zero exits before later instructions, nonzero continues t
   }
 });
 
+test('original FPU guard role exits on zero and continues only when FPU is available', async () => {
+  const env = environment();
+  // Native iii observer: load its payload availability value, return0/stride.
+  // The actual CheckFPU side effects are source-extracted in the native fixture.
+  const bytes = Uint8Array.from([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,
+    2,16,1,3,101,110,118,6,109,101,109,111,114,121,2,3,2,8,
+    3,2,1,0,7,7,1,3,114,117,110,0,0,10,9,1,7,0,32,1,40,2,0,11]);
+  const observer = (await WebAssembly.instantiate(bytes, { env: { memory: env.memory } })).instance.exports.run;
+  env.table.set(1, observer);
+  const run = await env.compiler.compile(descriptor([integer(0, 11, 1),
+    { kind: 'callback', role: 'fpu', handler: 1, payload: 256, distance: 16, terminal: false }, integer(0, 22, 2)]));
+  const words = new Uint32Array(env.memory.buffer);
+  for (const available of [0, 16]) {
+    words[64] = available; words[1] = words[2] = 0;
+    assert.equal(run(0, 0), 0); assert.equal(words[1], 11); assert.equal(words[2], available ? 22 : 0);
+  }
+});
+
 test('invalid descriptors and unsupported helpers leave original path untouched', () => {
   const env = environment();
   for (const d of [descriptor([{ kind: 'hle' }]), descriptor([integer(25)]),
