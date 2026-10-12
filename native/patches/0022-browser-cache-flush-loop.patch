@@ -1,0 +1,155 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+index 2032c5e..24b0a01 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -519,6 +519,85 @@ void CachedInterpreter::Jit(u32 em_address, bool clear_cache_and_retry_on_failur
+   std::exit(-1);
+ }
+ 
++#ifdef __EMSCRIPTEN__
++s32 CachedInterpreter::RunBrowserCacheFlushLoop(PowerPC::PowerPCState& ppc_state,
++                                               const BrowserCacheFlushLoopOperands& operands)
++{
++  auto& cached = operands.cached;
++  const auto destroyed_before = cached.m_block_cache.GetRangesToFree().size();
++  unsigned iterations = 0;
++  do
++  {
++#if defined(DWEB_CPU_DIAGNOSTICS)
++    if (iterations != 0)
++      s_browser_cpu_profile.Record(ppc_state.pc, static_cast<u32>(ppc_state.feature_flags));
++#endif
++    // Preserve every cache invalidation, branch-watch hit and performance event.
++    // An invalidated callback stream is not reused on the next iteration.
++    Interpret<false>(ppc_state, operands.ops[0]);
++    Interpret<false>(ppc_state, operands.ops[1]);
++    Interpret<true>(ppc_state, operands.ops[2]);
++    EndBlock<false>(ppc_state, operands.end);
++  } while (++iterations < 64 && ppc_state.pc == operands.ops[0].current_pc &&
++           ppc_state.downcount > 0 && ppc_state.Exceptions == 0 && !ppc_state.m_enable_dcache &&
++           *cached.m_system.GetCPU().GetStatePtr() == CPU::State::Running &&
++           !cached.m_system.GetCPU().IsStepping() &&
++           cached.m_block_cache.GetRangesToFree().size() == destroyed_before);
++  return 0;
++}
++
++s32 CachedInterpreter::RunBrowserCacheFlushLoop(std::ostream& stream,
++                                               const BrowserCacheFlushLoopOperands& operands)
++{
++  stream << "Cache maintenance loop (bounded to 64 iterations):\n";
++  for (const auto& op : operands.ops)
++    Interpret<false>(stream, op);
++  return sizeof(AnyCallback) + sizeof(operands);
++}
++
++bool CachedInterpreter::WriteBrowserCacheFlushLoop()
++{
++  // Same dcbx/addi/bdnz pattern recognized by Jit64::dcbx. Restrict this
++  // specialization to an entire block so no interior state observer is bypassed.
++  if (code_block.m_num_instructions != 3 || code_block.m_broken || IsDebuggingEnabled() ||
++      IsProfilingEnabled() || m_system.GetCPU().IsStepping() || jo.memcheck ||
++      m_ppc_state.m_enable_dcache)
++    return false;
++  const auto& first = m_code_buffer[0];
++  const auto& add = m_code_buffer[1];
++  const auto& branch = m_code_buffer[2];
++  if (first.inst.OPCD != 31 || (first.inst.SUBOP10 != 54 && first.inst.SUBOP10 != 86) ||
++      first.inst.RA != 0 || first.inst.RB == 0 ||
++      (add.inst.hex & 0xfc00ffff) != 0x38000020 || add.inst.RA_6 != first.inst.RB ||
++      add.inst.RD_2 != first.inst.RB || branch.inst.hex != 0x4200fff8 ||
++      add.address != first.address + 4 || branch.address != first.address + 8 ||
++      first.canEndBlock || add.canEndBlock || !branch.canEndBlock)
++    return false;
++  auto& interpreter = m_system.GetInterpreter();
++  const auto cache_handler = first.inst.SUBOP10 == 86 ? Interpreter::dcbf : Interpreter::dcbst;
++  const std::array<Interpreter::Instruction, 3> handlers = {
++      cache_handler, Interpreter::addi, Interpreter::bcx};
++  EndBlockOperands<false> end{};
++  for (unsigned i = 0; i < 3; ++i)
++  {
++    const auto& op = m_code_buffer[i];
++    if (op.skip || op.branchIsIdleLoop || Interpreter::GetInterpreterOp(op.inst) != handlers[i] ||
++        HLE::TryReplaceFunction(m_ppc_symbol_db, op.address, PowerPC::CoreMode::JIT))
++      return false;
++    end.downcount += op.opinfo->num_cycles;
++    end.num_load_stores += (op.opinfo->flags & FL_LOADSTORE) != 0;
++    end.num_fp_inst += (op.opinfo->flags & FL_USE_FPU) != 0;
++  }
++  Write(RunBrowserCacheFlushLoop,
++        BrowserCacheFlushLoopOperands{*this,
++                                     {{{interpreter, handlers[0], first.address, first.inst},
++                                       {interpreter, handlers[1], add.address, add.inst},
++                                       {interpreter, handlers[2], branch.address, branch.inst}}},
++                                     end});
++  return true;
++}
++#endif
++
+ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+ {
+   js.blockStart = em_address;
+@@ -537,6 +616,11 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
+   auto& cpu = m_system.GetCPU();
+   auto& breakpoints = power_pc.GetBreakPoints();
+ 
++#ifdef __EMSCRIPTEN__
++  if (WriteBrowserCacheFlushLoop())
++    return !HasWriteFailed();
++#endif
++
+   if (IsProfilingEnabled())
+     Write(StartProfiledBlock, {js.curBlock->profile_data.get()});
+ 
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+index 16fa46d..c4098ab 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <cstddef>
+ 
+ #include "Common/CommonTypes.h"
+@@ -74,6 +75,12 @@ private:
+   static s32 RunBrowserIntegerOps(std::ostream& stream,
+                                   const BrowserInteger::Header& operands);
+   BrowserInteger::Batch m_browser_integer_batch{};
++  struct BrowserCacheFlushLoopOperands;
++  bool WriteBrowserCacheFlushLoop();
++  static s32 RunBrowserCacheFlushLoop(PowerPC::PowerPCState& ppc_state,
++                                     const BrowserCacheFlushLoopOperands& operands);
++  static s32 RunBrowserCacheFlushLoop(std::ostream& stream,
++                                     const BrowserCacheFlushLoopOperands& operands);
+ #endif
+ 
+   // Finds a free memory region and sets the code emitter to point at that region.
+@@ -162,6 +169,15 @@ struct CachedInterpreter::InterpretAndCheckExceptionsOperands : InterpretOperand
+   u32 downcount;
+ };
+ 
++#ifdef __EMSCRIPTEN__
++struct CachedInterpreter::BrowserCacheFlushLoopOperands
++{
++  CachedInterpreter& cached;
++  std::array<InterpretOperands, 3> ops;
++  EndBlockOperands<false> end;
++};
++#endif
++
+ struct CachedInterpreter::HLEFunctionOperands
+ {
+   Core::System& system;
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+index eaaaa7e..806169b 100644
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+@@ -139,6 +139,7 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream&
+       LOOKUP_KV(CachedInterpreter::CheckIdle),
+ #ifdef __EMSCRIPTEN__
+       LOOKUP_KV(CachedInterpreter::RunBrowserIntegerOps),
++      LOOKUP_KV(CachedInterpreter::RunBrowserCacheFlushLoop),
+ #endif
+   });
+ 

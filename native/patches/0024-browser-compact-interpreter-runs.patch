@@ -1,0 +1,257 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h
+@@ -0,0 +1,40 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++#include <cstddef>
++
++#include "Common/CommonTypes.h"
++
++class Interpreter;
++union UGeckoInstruction;
++
++namespace BrowserInterpret
++{
++struct Op
++{
++  void (*handler)(Interpreter&, UGeckoInstruction);
++  u32 instruction;
++};
++
++struct Header
++{
++  Interpreter* interpreter = nullptr;
++  u32 count = 0;
++  u32 first_pc = 0;
++};
++
++struct Batch
++{
++  Header header;
++  std::array<Op, 32> ops;
++};
++static_assert(offsetof(Batch, ops) == sizeof(Header));
++
++constexpr std::size_t PayloadSize(u32 count)
++{
++  return sizeof(Header) + count * sizeof(Op);
++}
++}  // namespace BrowserInterpret
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.h
+@@ -10,6 +10,7 @@
+ #include "Common/RangeSizeSet.h"
+ #ifdef __EMSCRIPTEN__
+ #include "Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h"
++#include "Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h"
+ #endif
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h"
+ #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
+@@ -75,6 +76,13 @@
+   static s32 RunBrowserIntegerOps(std::ostream& stream,
+                                   const BrowserInteger::Header& operands);
+   BrowserInteger::Batch m_browser_integer_batch{};
++  bool AppendBrowserInterpretOp(Interpreter& interpreter, UGeckoInstruction inst, u32 pc);
++  void FlushBrowserInterpretOps();
++  static s32 RunBrowserInterpretOps(PowerPC::PowerPCState& ppc_state,
++                                    const BrowserInterpret::Header& operands);
++  static s32 RunBrowserInterpretOps(std::ostream& stream,
++                                    const BrowserInterpret::Header& operands);
++  BrowserInterpret::Batch m_browser_interpret_batch{};
+   struct BrowserCacheFlushLoopOperands;
+   bool WriteBrowserCacheFlushLoop();
+   static s32 RunBrowserCacheFlushLoop(PowerPC::PowerPCState& ppc_state,
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -159,6 +159,12 @@
+     const auto callback = *reinterpret_cast<const AnyCallback*>(normal_entry);
+     const u8* payload = normal_entry + sizeof(callback);
+ #ifdef __EMSCRIPTEN__
++    if (callback == AnyCallbackCast(RunBrowserInterpretOps))
++    {
++      normal_entry += RunBrowserInterpretOps(
++          ppc_state, *reinterpret_cast<const BrowserInterpret::Header*>(payload));
++      continue;
++    }
+     if (callback == AnyCallbackCast(RunBrowserIntegerOps))
+     {
+       normal_entry += RunBrowserIntegerOps(
+@@ -355,6 +361,60 @@
+ }
+ 
+ #ifdef __EMSCRIPTEN__
++s32 CachedInterpreter::RunBrowserInterpretOps(PowerPC::PowerPCState& ppc_state,
++                                             const BrowserInterpret::Header& operands)
++{
++  const auto* ops = reinterpret_cast<const BrowserInterpret::Op*>(
++      reinterpret_cast<const u8*>(&operands) + sizeof(operands));
++  // These are exactly the original Interpret<false> calls. In particular, retain
++  // the cached handler, stale PC/NPC semantics and unchecked exception behavior.
++  for (u32 i = 0; i < operands.count; ++i)
++    DispatchBrowserInstruction(*operands.interpreter, UGeckoInstruction{ops[i].instruction},
++                               ops[i].handler);
++  return sizeof(AnyCallback) + BrowserInterpret::PayloadSize(operands.count);
++}
++
++bool CachedInterpreter::AppendBrowserInterpretOp(Interpreter& interpreter, UGeckoInstruction inst,
++                                                u32 pc)
++{
++  const u32 primary = inst.OPCD;
++  if (primary != 10 && primary != 11 && (primary < 32 || primary > 45))
++    return false;
++  FlushBrowserIntegerOps();
++  auto& batch = m_browser_interpret_batch;
++  if (batch.header.count == batch.ops.size() ||
++      (batch.header.count != 0 &&
++       (batch.header.interpreter != &interpreter ||
++        pc != batch.header.first_pc + 4 * batch.header.count)))
++    FlushBrowserInterpretOps();
++  if (batch.header.count == 0)
++    batch.header = {&interpreter, 0, pc};
++  batch.ops[batch.header.count++] = {Interpreter::GetInterpreterOp(inst), inst.hex};
++  return true;
++}
++
++void CachedInterpreter::FlushBrowserInterpretOps()
++{
++  auto& batch = m_browser_interpret_batch;
++  if (batch.header.count == 0)
++    return;
++  if (batch.header.count == 1)
++  {
++    const auto& op = batch.ops[0];
++    Write(Interpret<false>, {*batch.header.interpreter, op.handler, batch.header.first_pc,
++                             UGeckoInstruction{op.instruction}});
++  }
++  else
++  {
++    static_assert(alignof(BrowserInterpret::Batch) <= alignof(AnyCallback));
++    static_assert(sizeof(BrowserInterpret::Header) % alignof(AnyCallback) == 0);
++    static_assert(sizeof(BrowserInterpret::Op) % alignof(AnyCallback) == 0);
++    Write(AnyCallbackCast(RunBrowserInterpretOps), &batch,
++          BrowserInterpret::PayloadSize(batch.header.count));
++  }
++  batch.header.count = 0;
++}
++
+ s32 CachedInterpreter::RunBrowserIntegerOps(PowerPC::PowerPCState& ppc_state,
+                                            const BrowserInteger::Header& operands)
+ {
+@@ -369,6 +429,7 @@
+   BrowserInteger::Op op;
+   if (!BrowserInteger::Decode(word, op))
+     return false;
++  FlushBrowserInterpretOps();
+   auto& batch = m_browser_integer_batch;
+   // A skipped/reordered analyzer op must not make the disassembler invent a PC.
+   if (batch.header.count == batch.ops.size() ||
+@@ -403,6 +464,7 @@
+     return false;
+ 
+ #ifdef __EMSCRIPTEN__
++  FlushBrowserInterpretOps();
+   FlushBrowserIntegerOps();
+ #endif
+   Write(HLEFunction, {m_system, address, result.hook_index});
+@@ -418,6 +480,7 @@
+ void CachedInterpreter::WriteEndBlock()
+ {
+ #ifdef __EMSCRIPTEN__
++  FlushBrowserInterpretOps();
+   FlushBrowserIntegerOps();
+ #endif
+   if (IsProfilingEnabled())
+@@ -609,6 +672,7 @@
+   js.curBlock = b;
+ #ifdef __EMSCRIPTEN__
+   m_browser_integer_batch.header.count = 0;
++  m_browser_interpret_batch.header.count = 0;
+ #endif
+ 
+   auto& interpreter = m_system.GetInterpreter();
+@@ -654,10 +718,16 @@
+       if (IsDebuggingEnabled() && !cpu.IsStepping() &&
+           breakpoints.IsAddressBreakPoint(js.compilerPC))
+       {
++#ifdef __EMSCRIPTEN__
++        FlushBrowserInterpretOps();
++#endif
+         Write(CheckBreakpoint, {power_pc, js.compilerPC, js.downcountAmount});
+       }
+       if (!js.firstFPInstructionFound && (op.opinfo->flags & FL_USE_FPU) != 0)
+       {
++#ifdef __EMSCRIPTEN__
++        FlushBrowserInterpretOps();
++#endif
+         Write(CheckFPU, {power_pc, js.compilerPC, js.downcountAmount});
+         js.firstFPInstructionFound = true;
+       }
+@@ -666,6 +736,9 @@
+       if ((jo.memcheck && (op.opinfo->flags & FL_LOADSTORE) != 0) ||
+           (!op.canEndBlock && ShouldHandleFPExceptionForInstruction(&op)))
+       {
++#ifdef __EMSCRIPTEN__
++        FlushBrowserInterpretOps();
++#endif
+         const InterpretAndCheckExceptionsOperands operands = {
+             {interpreter, Interpreter::GetInterpreterOp(op.inst), js.compilerPC, op.inst},
+             power_pc,
+@@ -676,6 +749,13 @@
+       }
+       else
+       {
++#ifdef __EMSCRIPTEN__
++        // Only the original unchecked, non-PC-writing callback is eligible.
++        if (!IsDebuggingEnabled() && !cpu.IsStepping() && !op.canEndBlock &&
++            !op.branchIsIdleLoop && AppendBrowserInterpretOp(interpreter, op.inst, op.address))
++          continue;
++        FlushBrowserInterpretOps();
++#endif
+         const InterpretOperands operands = {interpreter, Interpreter::GetInterpreterOp(op.inst),
+                                             js.compilerPC, op.inst};
+         Write(op.canEndBlock ? CallbackCast(Interpret<true>) : CallbackCast(Interpret<false>),
+@@ -689,6 +769,7 @@
+     }
+   }
+ #ifdef __EMSCRIPTEN__
++  FlushBrowserInterpretOps();
+   FlushBrowserIntegerOps();
+ #endif
+   if (code_block.m_broken)
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+@@ -90,6 +90,17 @@
+ }
+ 
+ #ifdef __EMSCRIPTEN__
++s32 CachedInterpreter::RunBrowserInterpretOps(std::ostream& stream,
++                                             const BrowserInterpret::Header& operands)
++{
++  const auto* ops = reinterpret_cast<const BrowserInterpret::Op*>(
++      reinterpret_cast<const u8*>(&operands) + sizeof(operands));
++  for (u32 i = 0; i < operands.count; ++i)
++    fmt::println(stream, "InterpretRun(pc=0x{:08x}, inst=0x{:08x})",
++                 operands.first_pc + i * 4, ops[i].instruction);
++  return sizeof(AnyCallback) + BrowserInterpret::PayloadSize(operands.count);
++}
++
+ s32 CachedInterpreter::RunBrowserIntegerOps(std::ostream& stream,
+                                            const BrowserInteger::Header& operands)
+ {
+@@ -140,6 +151,7 @@
+ #ifdef __EMSCRIPTEN__
+       LOOKUP_KV(CachedInterpreter::RunBrowserIntegerOps),
+       LOOKUP_KV(CachedInterpreter::RunBrowserCacheFlushLoop),
++      LOOKUP_KV(CachedInterpreter::RunBrowserInterpretOps),
+ #endif
+   });
+ 

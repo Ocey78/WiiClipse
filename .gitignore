@@ -10,3 +10,4 @@ dist/core/
 native-release/
 native-browser-smoke.log
 native-performance/
+__pycache__/

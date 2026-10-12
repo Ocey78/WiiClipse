@@ -25,11 +25,11 @@ const settings = {
   samplingIntervalUs: Number(process.env.PERF_SAMPLE_US || 1000),
   guestProfile: process.env.PERF_GUEST_PROFILE === '1',
 };
-if (!Number.isInteger(settings.warmup) || settings.warmup < 120 || settings.warmup > 2000 ||
+if (!Number.isInteger(settings.warmup) || settings.warmup < 120 || settings.warmup > 12000 ||
     !Number.isInteger(settings.frames) || settings.frames < 10 || settings.frames > 2000 ||
     !['hardware', 'software'].includes(settings.renderer) || !['bitmap', 'pixels'].includes(settings.video) ||
     !Number.isInteger(settings.samplingIntervalUs) || settings.samplingIntervalUs < 100)
-  throw new Error('Invalid profile settings: warmup 120–2000, frames 10–2000, hardware/software renderer, sample interval >=100us.');
+  throw new Error('Invalid profile settings: warmup 120–12000, frames 10–2000, hardware/software renderer, sample interval >=100us.');
 if (!Array.isArray(settings.inputSteps) || settings.inputSteps.some(step =>
   !Number.isInteger(step.atFrame) || step.atFrame < 0 ||
   !Number.isInteger(step.holdFrames ?? 1) || (step.holdFrames ?? 1) < 1))

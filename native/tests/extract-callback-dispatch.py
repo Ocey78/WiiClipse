@@ -1,4 +1,4 @@
-"""Extract real cached callback-loop bodies after patches 0013/0018/0019/0020.
+"""Extract real cached callback-loop bodies, including compact interpreter runs.
 
 Usage: python3 extract-callback-dispatch.py DOLPHIN_SOURCE OUTPUT_DIRECTORY
 """
@@ -25,7 +25,8 @@ def definition(prefix):
 
 parts = [definition("void CachedInterpreter::ExecuteOneBlock("),
          "template <bool profiled>\n" + definition("s32 CachedInterpreter::EndBlock("),
-         definition("s32 CachedInterpreter::RunBrowserIntegerOps(PowerPC::PowerPCState&")]
+         definition("s32 CachedInterpreter::RunBrowserIntegerOps(PowerPC::PowerPCState&"),
+         definition("s32 CachedInterpreter::RunBrowserInterpretOps(PowerPC::PowerPCState&")]
 with (output / "callback-dispatch-loop.h").open("w", encoding="utf-8", newline="\n") as handle:
     handle.write("// Actual patched callback loop and callbacks.\n" + "\n\n".join(parts) + "\n")
-print("Extracted actual ExecuteOneBlock, EndBlock and integer-run callbacks")
+print("Extracted actual ExecuteOneBlock, EndBlock, integer-run and interpreter-run callbacks")

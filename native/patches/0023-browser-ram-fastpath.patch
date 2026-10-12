@@ -1,0 +1,84 @@
+diff --git a/Source/Core/Core/PowerPC/MMU.cpp b/Source/Core/Core/PowerPC/MMU.cpp
+index 694a564..74c505b 100644
+--- a/Source/Core/Core/PowerPC/MMU.cpp
++++ b/Source/Core/Core/PowerPC/MMU.cpp
+@@ -635,9 +635,49 @@ void MMU::Memcheck(u32 address, u64 var, bool write, size_t size)
+   m_ppc_state.Exceptions |= EXCEPTION_DSI | EXCEPTION_FAKE_MEMCHECK_HIT;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++template <std::unsigned_integral T>
++u8* MMU::GetBrowserRAMPointer(u32 address)
++{
++  // Use only existing cached BAT mappings of aligned ordinary RAM. These conditions
++  // exclude cache behavior, watchpoints, page translation and uncached-store quirks.
++  if (!m_ppc_state.msr.DR || m_ppc_state.m_enable_dcache ||
++      m_power_pc.GetMemChecks().HasAny() || (address & (sizeof(T) - 1)))
++    return nullptr;
++
++  const u32 bat = m_dbat_table[address >> BAT_INDEX_SHIFT];
++  if ((bat & (BAT_MAPPED_BIT | BAT_PHYSICAL_BIT | BAT_WI_BIT)) !=
++      (BAT_MAPPED_BIT | BAT_PHYSICAL_BIT))
++    return nullptr;
++
++  // Alignment also ensures that this access cannot cross a hardware or BAT page.
++  const u32 physical = (bat & BAT_RESULT_MASK) | (address & (BAT_PAGE_SIZE - 1));
++  if (m_memory.GetRAM() && (physical & 0xF8000000) == 0x00000000 &&
++      physical < m_memory.GetRamSizeReal() &&
++      sizeof(T) <= m_memory.GetRamSizeReal() - physical)
++    return m_memory.GetRAM() + physical;
++
++  const u32 offset = physical & 0x0FFFFFFF;
++  if (m_memory.GetEXRAM() && (physical >> 28) == 0x1 &&
++      offset < m_memory.GetExRamSizeReal() && sizeof(T) <= m_memory.GetExRamSizeReal() - offset)
++    return m_memory.GetEXRAM() + offset;
++
++  // Mirrors, allocation padding, locked L1, fake VMEM and devices retain their routes.
++  return nullptr;
++}
++#endif
++
+ template <std::unsigned_integral T>
+ T MMU::Read(const u32 address)
+ {
++#ifdef __EMSCRIPTEN__
++  if (const u8* ptr = GetBrowserRAMPointer<T>(address))
++  {
++    T value;
++    std::memcpy(&value, ptr, sizeof(T));
++    return bswap(value);
++  }
++#endif
+   T var = ReadFromHardware<XCheckTLBFlag::Read, T>(address);
+ #ifdef __EMSCRIPTEN__
+   // Keep the common browser path out of the out-of-line debugger callback.
+@@ -701,6 +741,13 @@ template <std::unsigned_integral T>
+ void MMU::Write(const Common::MakeAtLeastU32<T> var, const u32 address)
+ {
+ #ifdef __EMSCRIPTEN__
++  if (u8* ptr = GetBrowserRAMPointer<T>(address))
++  {
++    const T value = bswap(static_cast<T>(var));
++    std::memcpy(ptr, &value, sizeof(T));
++    return;
++  }
++
+   if (m_power_pc.GetMemChecks().HasAny())
+ #endif
+   Memcheck(address, var, true, sizeof(T));
+diff --git a/Source/Core/Core/PowerPC/MMU.h b/Source/Core/Core/PowerPC/MMU.h
+index 14196df..60125c4 100644
+--- a/Source/Core/Core/PowerPC/MMU.h
++++ b/Source/Core/Core/PowerPC/MMU.h
+@@ -342,6 +342,11 @@ private:
+   void UpdateBATs(BatTable& bat_table, u32 base_spr);
+   void UpdateFakeMMUBat(BatTable& bat_table, u32 start_addr);
+ 
++#ifdef __EMSCRIPTEN__
++  template <std::unsigned_integral T>
++  u8* GetBrowserRAMPointer(u32 address);
++#endif
++
+   template <XCheckTLBFlag flag, std::unsigned_integral T, bool never_translate = false>
+   T ReadFromHardware(u32 em_address);
+   template <XCheckTLBFlag flag, bool never_translate = false>

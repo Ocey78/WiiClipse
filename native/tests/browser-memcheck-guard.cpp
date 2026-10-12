@@ -8,6 +8,9 @@
 #include <vector>
 #include "Common/CommonTypes.h"
 namespace Common { template <class T> using MakeAtLeastU32 = std::conditional_t<(sizeof(T) < 4), u32, T>; }
+// The RAM pointer stub below always rejects accesses. Catch accidental use of
+// its independently tested byte-swap branch without coupling this guard test.
+template <std::unsigned_integral T> T bswap(T) { assert(false); return 0; }
 constexpr u32 EXCEPTION_DSI = 8, EXCEPTION_FAKE_MEMCHECK_HIT = 0x100;
 enum class XCheckTLBFlag { Read, Write };
 struct Event
@@ -53,6 +56,8 @@ struct State { u32 pc = 0x80001234, Exceptions = 0; };
 
 #define DECLARE_MMU(name) struct name { \
   System m_system; PowerPCManager m_power_pc; State m_ppc_state; unsigned memcheck_entries = 0; \
+  /* Isolate watchpoint guards from the independently tested RAM fast path. */ \
+  template <std::unsigned_integral T> u8* GetBrowserRAMPointer(u32) { return nullptr; } \
   void MemcheckBody(u32 address, u64 var, bool write, size_t size); \
   void Memcheck(u32 address, u64 var, bool write, size_t size) { ++memcheck_entries; MemcheckBody(address, var, write, size); } \
   template <XCheckTLBFlag flag, std::unsigned_integral T> T ReadFromHardware(u32 address) { \

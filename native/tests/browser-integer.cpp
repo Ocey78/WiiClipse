@@ -43,6 +43,9 @@ public:
   static s32 RunBrowserIntegerOps(TestState&, const BrowserInteger::Header&);
   bool AppendBrowserIntegerOp(u32, u32);
   void FlushBrowserIntegerOps();
+  // This arithmetic fixture has no pending ordinary runs. Their interleaving
+  // with integer runs is exercised by the complete DoJit fixture separately.
+  void FlushBrowserInterpretOps() {}
 };
 #define DEBUG_ASSERT(condition) assert(condition)
 #include "integer-batch-reference.h"

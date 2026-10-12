@@ -6,6 +6,7 @@
 #undef main
 #include <cstdlib>
 #include "Core/PowerPC/CachedInterpreter/BrowserIntegerOps.h"
+#include "Core/PowerPC/CachedInterpreter/BrowserInterpretOps.h"
 
 struct JitBlock
 {
@@ -35,7 +36,8 @@ struct BlockCache { const u8* entry = nullptr; const u8* Dispatch() { return ent
   template <bool write_pc> static s32 Interpret(PowerPC::PowerPCState& state, const Operands& operands) { return callbacks::Interpret<write_pc>(state, operands); } \
   template <bool write_pc> static s32 InterpretAndCheckExceptions(PowerPC::PowerPCState& state, const CheckedOperands& operands) { return callbacks::InterpretAndCheckExceptions<write_pc>(state, operands); } \
   template <bool profiled> static s32 EndBlock(PowerPC::PowerPCState&, const EndOperands<profiled>&); \
-  static s32 RunBrowserIntegerOps(PowerPC::PowerPCState&, const BrowserInteger::Header&); };
+  static s32 RunBrowserIntegerOps(PowerPC::PowerPCState&, const BrowserInteger::Header&); \
+  static s32 RunBrowserInterpretOps(PowerPC::PowerPCState&, const BrowserInterpret::Header&); };
 DECLARE_LOOP(OriginalLoop, OriginalCallbacks)
 DECLARE_LOOP(BrowserLoop, BrowserCallbacks)
 #undef DECLARE_LOOP
@@ -78,11 +80,34 @@ struct Program
     const size_t payload = BrowserInteger::PayloadSize(batch.header.count);
     std::memcpy(bytes.data() + used, &batch, payload); used += payload;
   }
+  template <class Loop> void InterpreterRun(Interpreter& interpreter)
+  {
+    const UGeckoInstruction load{(32u << 26) | (6u << 21) | (1u << 16)};
+    const UGeckoInstruction store{(36u << 26) | (6u << 21) | (1u << 16) | 4u};
+    if constexpr (std::is_same_v<Loop, OriginalLoop>)
+    {
+      // Differential reference uses the original individual callbacks.
+      Add<Operands, Loop>(Loop::template Interpret<false>, {interpreter, Interpreter::lwz, 0x80004000, load});
+      Add<Operands, Loop>(Loop::template Interpret<false>, {interpreter, Interpreter::stw, 0x80004004, store});
+    }
+    else
+    {
+      const auto fn = Loop::AnyCallbackCast(Loop::RunBrowserInterpretOps);
+      BrowserInterpret::Batch batch{};
+      batch.header = {&interpreter, 2, 0x80004000};
+      batch.ops[0] = {Interpreter::lwz, load.hex};
+      batch.ops[1] = {Interpreter::stw, store.hex};
+      std::memcpy(bytes.data() + used, &fn, sizeof(fn)); used += sizeof(fn);
+      const size_t payload = BrowserInterpret::PayloadSize(batch.header.count);
+      std::memcpy(bytes.data() + used, &batch, payload); used += payload;
+    }
+  }
 };
 template <class Loop>
 void BuildProgram(Program& program, Fixture& fixture, bool write_pc, bool fail)
 {
   program.IntegerRun<Loop>();
+  program.InterpreterRun<Loop>(fixture.interpreter);
   const Operands op{fixture.interpreter, Interpreter::lwz, 0xfffffffc,
                     UGeckoInstruction{(32u << 26) | (3u << 21) | (1u << 16)}};
   program.Add<Operands, Loop>(Loop::template Interpret<false>, op);
@@ -121,6 +146,7 @@ int main()
       assert(expected.memory.accesses == actual.memory.accesses);
       assert(expected.manager.checks == actual.manager.checks);
       assert(actual.state.gpr[5] == 3); // Integer-run payload advances to the next callback.
+      assert(actual.state.gpr[6] == 0x12000000u && actual.memory.bytes[20] == 0x12);
       assert(actual.state.gpr[12] == (fail ? 0x11223344u : 0x55667788u));
       assert(actual.state.downcount == (fail ? 83 : 69));
       assert(actual.manager.checks == (fail ? 1 : 0));
@@ -131,5 +157,5 @@ int main()
   missing.state.pc = 0xdeadbeef;
   browser.ExecuteOneBlock();
   assert(browser.jit_calls == 1 && browser.jit_pc == 0xdeadbeef);
-  std::puts("Verified actual native/browser callback-loop distances, exception exits, end-block accounting, integer runs, generic fallback and cache miss");
+  std::puts("Verified actual native/browser callback-loop distances, exception exits, end-block accounting, integer/interpreter runs, generic fallback and cache miss");
 }
