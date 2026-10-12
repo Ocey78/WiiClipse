@@ -146,8 +146,8 @@ int main()
   registry.Retire(gate);registry.Drain([](u32){},[](u32){});
 #ifdef TEST_BROWSER_COMPILER_NATIVE_CR
   for(const auto [opcode,handler,label]:{
-       std::tuple{10u,Interpreter::cmpli,"cmpli"},std::tuple{11u,Interpreter::cmpi,"cmpi"},
-       std::tuple{16u,Interpreter::bcx,"bcx"},std::tuple{18u,Interpreter::bx,"bx"}}) {
+       std::tuple{10u,&Interpreter::cmpli,"cmpli"},std::tuple{11u,&Interpreter::cmpi,"cmpi"},
+       std::tuple{16u,&Interpreter::bcx,"bcx"},std::tuple{18u,&Interpreter::bx,"bx"}}) {
     Program native_op;
     auto canonical=load;canonical.func=handler;canonical.inst.hex=opcode<<26;
     native_op.Add(CachedInterpreter::Interpret<true>,canonical);native_op.End();
