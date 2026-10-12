@@ -4,6 +4,7 @@
 #include <cassert>
 #include <concepts>
 #include <cstdio>
+#include <cstring>
 #include <type_traits>
 #include <vector>
 #include "Common/CommonTypes.h"
