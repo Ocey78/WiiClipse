@@ -167,8 +167,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Package verified core and corresponding source
+        if: inputs.profile != 'diagnostic'
         run: node scripts/package-native-release.mjs
       - uses: actions/upload-artifact@v4
+        if: inputs.profile != 'diagnostic'
         with:
           name: verified-native-release
           path: native-release/
