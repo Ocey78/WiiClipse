@@ -79,6 +79,8 @@ jobs:
       - run: npm ci
       - name: Verify native browser media boundary
         run: node --test native/tests/browser-media.test.mjs
+      - name: Verify browser uniform block alignment
+        run: node native/tests/browser-uniforms.test.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium firefox
       - name: Verify browser frame scheduling

@@ -1,0 +1,32 @@
+diff --git a/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp b/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
+--- a/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
++++ b/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
+@@ -281,14 +281,26 @@
+ void ProgramShaderCache::UploadConstants(const void* data, u32 data_size)
+ {
++#ifdef __EMSCRIPTEN__
++  // WebGL validates the bound range against the whole std140 block, including
++  // its trailing vec4 alignment. Post-processing uploads 140 bytes of fields
++  // for a 144-byte block; reserving aligned capacity alone does not pad the binding.
++  const u32 binding_size = Common::AlignUp(data_size, 16u);
++#else
++  const u32 binding_size = data_size;
++#endif
++
+   // allocate and copy
+-  const u32 alloc_size = Common::AlignUp(data_size, s_ubo_align);
++  const u32 alloc_size = Common::AlignUp(binding_size, s_ubo_align);
+   auto buffer = s_buffer->Map(alloc_size, s_ubo_align);
+   std::memcpy(buffer.first, data, data_size);
++#ifdef __EMSCRIPTEN__
++  std::memset(buffer.first + data_size, 0, binding_size - data_size);
++#endif
+   s_buffer->Unmap(alloc_size);
+ 
+   // bind the same sub-buffer to all stages
+   for (u32 index = 1; index <= 4; index++)
+-    glBindBufferRange(GL_UNIFORM_BUFFER, index, s_buffer->m_buffer, buffer.second, data_size);
++    glBindBufferRange(GL_UNIFORM_BUFFER, index, s_buffer->m_buffer, buffer.second, binding_size);
+ 
+   ADDSTAT(g_stats.this_frame.bytes_uniform_streamed, data_size);
+ }
