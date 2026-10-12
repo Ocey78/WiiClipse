@@ -87,6 +87,8 @@ jobs:
         run: node native/tests/browser-uniforms.test.mjs
       - name: Verify browser streaming buffer uploads
         run: node native/tests/browser-streaming.test.mjs
+      - name: Verify optional browser CPU diagnostics
+        run: node native/tests/browser-cpu-profile.test.mjs
       - run: npm run verify
       - run: npx playwright install --with-deps chromium firefox
       - name: Verify browser frame scheduling

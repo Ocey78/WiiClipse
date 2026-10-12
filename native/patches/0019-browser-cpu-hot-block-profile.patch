@@ -1,0 +1,177 @@
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+--- a/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp
+@@ -81,6 +81,39 @@
+ }
+ #endif
+ 
++#if defined(__EMSCRIPTEN__) && defined(DWEB_CPU_DIAGNOSTICS)
++#include <emscripten.h>
++#include "Core/PowerPC/CachedInterpreter/BrowserCPUProfile.h"
++#include "Core/PowerPC/MMU.h"
++
++static BrowserCPU::Profile s_browser_cpu_profile;
++
++extern "C" EMSCRIPTEN_KEEPALIVE void dweb_set_cpu_profile(int enabled)
++{
++  s_browser_cpu_profile.SetEnabled(enabled != 0);
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE void dweb_reset_cpu_profile()
++{
++  s_browser_cpu_profile.Reset();
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE const char* dweb_cpu_profile()
++{
++  auto& system = Core::System::GetInstance();
++  const Core::CPUThreadGuard guard(system);
++  const u32 flags = static_cast<u32>(system.GetPPCState().feature_flags);
++  static std::string snapshot;
++  snapshot = s_browser_cpu_profile.Snapshot(flags, [&](u32 pc) -> std::optional<u32> {
++    const auto instruction = PowerPC::MMU::HostTryReadInstruction(guard, pc);
++    if (!instruction)
++      return std::nullopt;
++    return instruction->value;
++  });
++  return snapshot.c_str();
++}
++#endif
++
+ CachedInterpreter::CachedInterpreter(Core::System& system) : JitBase(system), m_block_cache(*this)
+ {
+ }
+@@ -110,6 +143,9 @@
+ 
+ void CachedInterpreter::ExecuteOneBlock()
+ {
++#if defined(__EMSCRIPTEN__) && defined(DWEB_CPU_DIAGNOSTICS)
++  s_browser_cpu_profile.Record(m_ppc_state.pc, static_cast<u32>(m_ppc_state.feature_flags));
++#endif
+   const u8* normal_entry = m_block_cache.Dispatch();
+   if (!normal_entry)
+   {
+diff --git a/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCPUProfile.h b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCPUProfile.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/Core/PowerPC/CachedInterpreter/BrowserCPUProfile.h
+@@ -0,0 +1,119 @@
++// Copyright 2026 Dolphin Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <cstdint>
++#include <sstream>
++#include <string>
++
++// Included only by diagnostic Emscripten builds. Samples never inspect guest
++// memory or alter dispatch, and the fixed table cannot grow with title activity.
++namespace BrowserCPU
++{
++class Profile
++{
++public:
++  static constexpr std::size_t kCapacity = 4096;
++  static constexpr std::uint64_t kStride = 64;
++  static constexpr std::size_t kProbeLimit = 16;
++
++  void SetEnabled(bool enabled) { m_enabled = enabled; }
++  void Reset()
++  {
++    m_entries.fill({});
++    m_seen = m_sampled = m_dropped = 0;
++  }
++
++  void Record(std::uint32_t pc, std::uint32_t flags)
++  {
++    if (!m_enabled || (++m_seen % kStride) != 0)
++      return;
++    ++m_sampled;
++    const std::uint32_t hash = ((pc >> 2) ^ (pc >> 16)) * 0x9e3779b1u ^ flags * 0x85ebca6bu;
++    for (std::size_t probe = 0; probe < kProbeLimit; ++probe)
++    {
++      auto& entry = m_entries[(hash + probe) & (kCapacity - 1)];
++      if (entry.count == 0)
++      {
++        entry = {pc, flags, 1};
++        return;
++      }
++      if (entry.pc == pc && entry.flags == flags)
++      {
++        ++entry.count;
++        return;
++      }
++    }
++    ++m_dropped;
++  }
++
++  template <typename Reader>
++  std::string Snapshot(std::uint32_t read_flags, Reader&& read_instruction) const
++  {
++    std::array<const Entry*, kCapacity> ranked{};
++    std::size_t count = 0;
++    for (const auto& entry : m_entries)
++      if (entry.count != 0)
++        ranked[count++] = &entry;
++    const std::size_t top = std::min(count, std::size_t{32});
++    std::partial_sort(ranked.begin(), ranked.begin() + top, ranked.begin() + count,
++                      [](const Entry* a, const Entry* b) {
++                        if (a->count != b->count)
++                          return a->count > b->count;
++                        if (a->pc != b->pc)
++                          return a->pc < b->pc;
++                        return a->flags < b->flags;
++                      });
++    std::ostringstream json;
++    json << "{\"enabled\":" << (m_enabled ? "true" : "false")
++         << ",\"seenBlocks\":" << m_seen << ",\"sampledBlocks\":" << m_sampled
++         << ",\"droppedSamples\":" << m_dropped << ",\"stride\":" << kStride
++         << ",\"capacity\":" << kCapacity << ",\"readFeatureFlags\":" << read_flags
++         << ",\"blocks\":[";
++    for (std::size_t i = 0; i < top; ++i)
++    {
++      const auto& entry = *ranked[i];
++      if (i != 0)
++        json << ',';
++      json << "{\"pc\":" << entry.pc << ",\"featureFlags\":" << entry.flags
++           << ",\"count\":" << entry.count << ",\"words\":[";
++      // The snapshot's translation state may differ from a recorded block.
++      // Never label words read under another state as that block's instructions.
++      if (entry.flags == read_flags)
++      {
++        for (std::uint32_t word = 0; word < 12; ++word)
++        {
++          const std::uint32_t address = entry.pc + word * 4;
++          if (address < entry.pc)
++            break;
++          const auto instruction = read_instruction(address);
++          if (!instruction)
++            break;
++          if (word != 0)
++            json << ',';
++          json << *instruction;
++        }
++      }
++      json << "]}";
++    }
++    json << "]}";
++    return json.str();
++  }
++
++private:
++  struct Entry
++  {
++    std::uint32_t pc = 0;
++    std::uint32_t flags = 0;
++    std::uint64_t count = 0;
++  };
++  std::array<Entry, kCapacity> m_entries{};
++  bool m_enabled = false;
++  std::uint64_t m_seen = 0;
++  std::uint64_t m_sampled = 0;
++  std::uint64_t m_dropped = 0;
++};
++}  // namespace BrowserCPU

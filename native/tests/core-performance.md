@@ -94,3 +94,50 @@ execution, native GPU rendering/readback where selected, and worker message
 delivery. They exclude frontend presentation, audio playback, and display pacing.
 Synthetic results do not establish commercial-game compatibility or speed; test
 the actual game and target browser before choosing a release.
+
+**Local game measurements.** `tests/local-game-performance.mjs` loads a game
+through a browser file picker. Its loopback server serves only the app and core;
+the game is neither served nor uploaded. Reports and screenshots belong in the
+ignored `native-performance` directory:
+
+```bash
+LOCAL_GAME_PATH=/path/to/game.wad PERF_CORE_DIR=/path/to/candidate/core \
+  PERF_WARMUP=600 PERF_FRAMES=120 \
+  PERF_OUT=native-performance/local-game/report.json \
+  node tests/local-game-performance.mjs
+```
+
+Use `PERF_INPUT_STEPS` with JSON entries containing `atFrame`, `holdFrames`,
+`buttons` and optional `axes` to repeat the same route through menus. Use
+`PERF_SCREENSHOT_FRAMES=300,600,720` to inspect the actual game state. Keep the
+same inputs, frame interval, browser and machine for candidate comparisons.
+`CHROME_PATH` selects an installed Chromium executable. The report records its
+graphics renderer, core checksums, video count and frame-time distribution.
+
+Schema 3 separates submission throughput from `gpuCompletedWallFps`. At warmup,
+screenshot milestones and the final boundary, it waits for a WebGL fence on the
+presenter after importing the worker's image. Event-loop polling and GPU wait
+time are counted; image encoding and report-writing pauses are excluded. A
+failed or unfinished fence yields no completed-throughput claim. This measures
+the presented worker output, not monitor scanout. Video counts and screenshots
+must establish game progress; a high request rate at a static menu is not proof
+of gameplay speed.
+
+For bottleneck diagnosis, `tests/profile-local-worker.mjs` records a worker CPU
+profile and native/graphics-call wall time. `PERF_SYMBOLS` should identify the
+symbol map from that exact core build. `PERF_EXPECT_WASM_SHA256` can enforce the
+candidate checksum. These instrumented runs exclude frontend presentation and
+are not substitutes for the completed-frame benchmark.
+
+The native workflow's `diagnostic` profile enables bounded guest block sampling.
+Set `PERF_GUEST_PROFILE=1` when profiling that build to collect hot PCs and their
+instructions locally. Normal builds contain no diagnostic branch in CPU block
+dispatch, and diagnostic builds cannot publish a core release.
+
+```bash
+LOCAL_GAME_PATH=/path/to/game.wad PERF_CORE_DIR=/path/to/candidate/core \
+  PERF_SYMBOLS=/path/to/dolphin-core.js.symbols \
+  PERF_WARMUP=600 PERF_FRAMES=120 \
+  PERF_OUT=native-performance/local-worker-profile.json \
+  node tests/profile-local-worker.mjs
+```
